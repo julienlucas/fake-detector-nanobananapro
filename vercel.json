@@ -1,0 +1,50 @@
+{
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "250mb",
+        "includeFiles": [
+          "backend/**",
+          "frontend/dist/**",
+          "requirements.txt"
+        ],
+        "excludeFiles": [
+          "**/__pycache__/**",
+          "**/*.pyc",
+          "**/tests/**",
+          "**/test/**",
+          "**/.git/**",
+          "**/node_modules/**",
+          "frontend/src/**",
+          "frontend/node_modules/**",
+          "frontend/public/**",
+          "**/*.pth",
+          "**/convert_to_onnx.py",
+          "**/inference.py",
+          "**/datasets/**",
+          "**/*test*.onnx",
+          "**/examples/**",
+          "**/docs/**",
+          "**/*.md",
+          "**/*.txt",
+          "**/*.rst"
+        ]
+      }
+    },
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ]
+}
