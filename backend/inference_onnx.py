@@ -90,7 +90,7 @@ def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_
                 return font
             except Exception:
                 continue
-        raise RuntimeError(f"Impossible de charger une police TrueType. Taille demandée: {size}")
+        return ImageFont.load_default()
 
     img_with_boxes = vutils.draw_bounding_boxes(
         image=image_tensor_u8,
