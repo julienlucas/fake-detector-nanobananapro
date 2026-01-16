@@ -70,7 +70,7 @@ def load_mobilenetv3_model(weights_path, num_classes=None):
     return model
 
 
-def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_size=54, text_offset=14, stroke_width=0):
+def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_size=54, text_offset=14, stroke_width=0, padding_left=24, padding_bottom=24):
     COLOR_MAP = {"red": (255, 0, 0), "green": (0, 200, 0)}
     FONT_CANDIDATES = [
         "DejaVuSans.ttf",
@@ -108,8 +108,11 @@ def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_
 
     for (xmin, ymin, xmax, ymax), label, color in zip(boxes, labels, bbox_colors):
         text_w, text_h = draw.textbbox((0, 0), label, font=font)[2:]
-        x = int(max(0, min(pil_img.size[0] - 1, xmin)))
-        y = int(ymin - text_h - text_offset) if (ymin - text_h - text_offset) >= 0 else int(min(pil_img.size[1] - text_h - 1, ymax + text_offset))
+        x = int(max(0, min(pil_img.size[0] - 1, xmin + padding_left)))
+        if (ymin - text_h - text_offset) >= 0:
+            y = int(ymin - text_h - text_offset)
+        else:
+            y = int(min(pil_img.size[1] - text_h - 1 - padding_bottom, ymax + text_offset - padding_bottom))
 
         draw.text((x, y), label, fill=_color_to_rgb(color), font=font, stroke_width=stroke_width, stroke_fill=(0, 0, 0))
 
@@ -118,7 +121,6 @@ def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_
 
 def predict_with_gradcam(pil_image):
     session = get_onnx_session()
-    model = get_pytorch_model()
 
     w, h = pil_image.size
 
@@ -149,74 +151,13 @@ def predict_with_gradcam(pil_image):
     pred_label = class_names[pred_idx]
     conf = float(probs[pred_idx])
 
-    imagenet_mean_torch = torch.tensor([0.485, 0.456, 0.406])
-    imagenet_std_torch = torch.tensor([0.229, 0.224, 0.225])
-    val_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=imagenet_mean_torch, std=imagenet_std_torch),
-    ])
-
-    last_conv = next((m for m in reversed(list(model.features.modules())) if isinstance(m, nn.Conv2d)), None)
-    if last_conv is None:
-        raise RuntimeError("Impossible de trouver une couche Conv2d pour Grad-CAM.")
-
-    activations = None
-    gradients = None
-
-    def save_grad(grad):
-        nonlocal gradients
-        gradients = grad
-
-    def fwd_hook(_module, _inp, out):
-        nonlocal activations
-        activations = out
-        out.register_hook(save_grad)
-
-    handle = last_conv.register_forward_hook(fwd_hook)
-
-    input_tensor_torch = val_transform(pil_image).unsqueeze(0).to(DEVICE)
-    model.zero_grad(set_to_none=True)
-    logits_torch = model(input_tensor_torch)
-    logits_torch[0, pred_idx].backward()
-    handle.remove()
-
-    cam = (gradients.mean(dim=(2, 3), keepdim=True) * activations).sum(dim=1, keepdim=True)
-    cam = F.relu(F.interpolate(cam, size=(224, 224), mode="bilinear", align_corners=False))[0, 0]
-    cam = cam / (cam.max() + 1e-8)
-
-    gamma = 2.2
-    keep_top = 0.15
-    cam_vis = cam.detach().float().cpu().pow(gamma) / (cam.detach().float().cpu().pow(gamma).max() + 1e-8)
-    thr = torch.quantile(cam_vis.flatten(), 1.0 - keep_top)
-    mask = cam_vis >= thr
-    ys, xs = mask.nonzero(as_tuple=True)
-
-    if ys.numel() == 0:
-        boxes = [[0, 0, w - 1, h - 1]]
-    else:
-        xmin_224, xmax_224 = int(xs.min().item()), int(xs.max().item())
-        ymin_224, ymax_224 = int(ys.min().item()), int(ys.max().item())
-        sx, sy = w / 224.0, h / 224.0
-        boxes = [[
-            max(0, min(w - 1, int(xmin_224 * sx))),
-            max(0, min(h - 1, int(ymin_224 * sy))),
-            max(0, min(w - 1, int((xmax_224 + 1) * sx))),
-            max(0, min(h - 1, int((ymax_224 + 1) * sy)))
-        ]]
-
-    alpha = 0.8
-    img_f = torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).float() / 255.0
-    cam_orig = F.interpolate(cam_vis[None, None, ...], size=(h, w), mode="bilinear", align_corners=False)[0, 0]
-    overlay = img_f.clone()
-    overlay[0] = (overlay[0] + cam_orig * alpha).clamp(0, 1)
-    overlay_u8 = (overlay * 255.0).byte()
-
+    boxes = [[0, 0, w - 1, h - 1]]
     color = "red" if pred_idx == 0 else "green"
     base_font_size = max(32, int(min(w, h) * 0.05))
+    img_u8 = torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).byte()
 
     result_tensor = draw_bboxes(
-        image_tensor_u8=overlay_u8,
+        image_tensor_u8=img_u8,
         boxes=boxes,
         labels=[f"{pred_label[:1].upper()}{pred_label[1:]} {conf * 100:.1f}%"],
         bbox_colors=[color],
