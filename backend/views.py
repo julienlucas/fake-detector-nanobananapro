@@ -24,6 +24,12 @@ os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
 os.environ["LANGCHAIN_PROJECT"] = "fakefinder-nanobananapro"
 
+try:
+    from .inference_onnx import get_onnx_session
+    get_onnx_session()
+except Exception as exc:
+    logger.error(f"Warmup ONNX échoué: {str(exc)}")
+
 def _get_langsmith_client():
     api_key = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
     if not api_key:

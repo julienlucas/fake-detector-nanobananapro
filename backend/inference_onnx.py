@@ -84,13 +84,15 @@ def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_
         return COLOR_MAP.get(str(c).lower(), (255, 255, 255))
 
     def _load_font(size):
-        for path in FONT_CANDIDATES:
+        pil_fonts_dir = os.path.join(os.path.dirname(ImageFont.__file__), "fonts")
+        candidates = list(FONT_CANDIDATES) + [os.path.join(pil_fonts_dir, "DejaVuSans.ttf")]
+        for path in candidates:
             try:
                 font = ImageFont.truetype(path, size)
-                return font
+                return font, True
             except Exception:
                 continue
-        return ImageFont.load_default()
+        return ImageFont.load_default(), False
 
     img_with_boxes = vutils.draw_bounding_boxes(
         image=image_tensor_u8,
@@ -101,20 +103,35 @@ def draw_bboxes(image_tensor_u8, boxes, labels, bbox_colors, bbox_width=6, font_
 
     pil_img = Image.fromarray(img_with_boxes.permute(1, 2, 0).cpu().numpy())
     draw = ImageDraw.Draw(pil_img)
-    font = _load_font(font_size)
+    font, is_truetype = _load_font(font_size)
 
     if len(bbox_colors) == 1 and len(boxes) > 1:
         bbox_colors = bbox_colors * len(boxes)
 
     for (xmin, ymin, xmax, ymax), label, color in zip(boxes, labels, bbox_colors):
         text_w, text_h = draw.textbbox((0, 0), label, font=font)[2:]
-        x = int(max(0, min(pil_img.size[0] - 1, xmin + padding_left)))
-        if (ymin - text_h - text_offset) >= 0:
-            y = int(ymin - text_h - text_offset)
+        scale = 1
+        render_w, render_h = text_w, text_h
+        if not is_truetype:
+            scale = max(1, int(round(font_size / max(1, text_h))))
+            render_w = max(1, int(text_w * scale))
+            render_h = max(1, int(text_h * scale))
+        x = int(max(0, min(pil_img.size[0] - render_w - 1, xmin + padding_left)))
+        if (ymin - render_h - text_offset) >= 0:
+            y = int(ymin - render_h - text_offset)
         else:
-            y = int(min(pil_img.size[1] - text_h - 1 - padding_bottom, ymax + text_offset - padding_bottom))
+            y = int(min(pil_img.size[1] - render_h - 1 - padding_bottom, ymax + text_offset - padding_bottom))
 
-        draw.text((x, y), label, fill=_color_to_rgb(color), font=font, stroke_width=stroke_width, stroke_fill=(0, 0, 0))
+        if is_truetype:
+            draw.text((x, y), label, fill=_color_to_rgb(color), font=font, stroke_width=stroke_width, stroke_fill=(0, 0, 0))
+        else:
+            mask = Image.new("L", (text_w, text_h), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.text((0, 0), label, fill=255, font=font)
+            if scale != 1:
+                mask = mask.resize((render_w, render_h), resample=Image.NEAREST)
+            color_img = Image.new("RGBA", (render_w, render_h), _color_to_rgb(color) + (255,))
+            pil_img.paste(color_img, (x, y), mask)
 
     return torch.from_numpy(np.array(pil_img)).permute(2, 0, 1).to(dtype=torch.uint8)
 
