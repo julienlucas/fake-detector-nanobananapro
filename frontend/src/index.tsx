@@ -4,6 +4,7 @@ import { Upload, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { Ripple } from "@/components/ui/shadcn-io/ripple";
+import ContactForm from "@/components/ui/contact-form";
 
 const exampleImages = [
   { value: "/static/04efb32e-e9dc-4389-9b64-ad3af3e3389b_min.webp", label: "Fake Nano Banana Pro" },
@@ -251,7 +252,10 @@ export default function Index() {
         </CardContent>
       </Card>
 
-      <Card className="mt-12 border-none max-w-2xl mx-auto shadow-none">
+      <Card
+        id="contact-form"
+        className="mt-12 border-none max-w-2xl mx-auto shadow-none"
+      >
         <CardContent className="p-0 border-none">
           <CardTitle
             variant="h2"
@@ -259,16 +263,12 @@ export default function Index() {
           >
             Étude de cas
           </CardTitle>
-          <CardTitle variant="h3">
-            Détecter les fakes avec une faible latence et un entraînement de
-            modèle facile et rapide
+          <CardTitle variant="h3-card" className="mb-0 mt-4">Le challenge</CardTitle>
+          <CardTitle variant="h3" className="font-medium">
+            Détecter les fakes avec précision avec un entraînement rapide, peu couteux et
+            un modèle léger
           </CardTitle>
-          <CardTitle variant="h3">Le challenge</CardTitle>
-          <p className="mb-4">
-            Créer un détecteur d'images Nano Banana Pro précis, rapidement et
-            peu couteux :
-          </p>
-          <ul className="list-disc list-inside mb-4 space-y-2">
+          <ul className="list-disc list-inside mb-4 space-y-4">
             <li>
               <strong>
                 Pouvoir détecter sur tous les modèles de diffusion
@@ -293,12 +293,8 @@ export default function Index() {
               détection généralisée.
             </li>
           </ul>
-          <CardTitle variant="h3">Résultats et évaluation</CardTitle>
-          <p className="mb-4">
-            Le système utilise une approche de transfer learning avec
-            MobileNetV3 Large pour détecter les images générées par IA :
-          </p>
-          <ul className="list-inside mb-4 space-y-2">
+          <CardTitle variant="h3-card">Résultats et évaluation</CardTitle>
+          <ul className="list-inside mb-4 space-y-4">
             <li>
               <strong>🎯 Précision élevée rapidement atteinte</strong> : 8,5/10
               image détectées correctement sur le dataset de test de 2000 images
@@ -306,36 +302,51 @@ export default function Index() {
             </li>
             <li>
               <strong>
-                ⌛ Entraînement en seulement 3 minutes et juste avec un Mac Book
-                Pro M1
-              </strong>{" "}
-              : Juste 1 seule passe sur le jeu de donnée!
-            </li>
-            <li>
-              <strong>
-                🧠 Méthode de fine-tuning du MobileNetV3 Large par Transfer
-                Learning
-              </strong>{" "}
-              : Fine-tuning de la dernière couche du modèle, le classifieur
-              uniquement (reste du modèle gelé), pour un entraînement ultra
-              rapide.
-            </li>
-            <li>
-              <strong>
-                ⚡ Le modèle a une <span>très faible latence</span>, quasi
-                instannée.
+                ⌛ <span>Entraînement en seulement 3 minutes</span> juste avec
+                un Mac Pro M1
               </strong>
+              , 1 seule passe sur le jeu de donnée!
+            </li>
+            <li>
+              <strong>
+                🧠 Fine-tuning <span>d'un modèle très léger</span>, le
+                MobileNetV3 Large par Transfer Learning
+              </strong>{" "}
+              : tuning de la dernière couche du modèle, le classifieur
+              uniquement pour un entraînement ultra rapide et efficace.
+            </li>
+            <li>
+              <strong>
+                💰 Zéro coûts d'API lors de l'inférence étant donné que c'est un
+                modèle personnel.
+              </strong>
+            </li>
+            <li>
+              <strong>
+                ⚡ Le modèle a une <span>très faible latence</span>.
+              </strong>
+              <img
+                src="/static/langsmith.png"
+                alt="LangSmith"
+                className="w-full h-auto rounded mt-3 border border-gray-100 rounded-sm"
+              />
+              <CardDescription className="italic text-center text-xs">
+                Montoring dans LangSmith
+              </CardDescription>
             </li>
           </ul>
           <p>Et voilà.</p>
-          <CardTitle variant="h3" className="mt-6 text-center">
-            On discute de votre projet?
+          <CardTitle
+            variant="h3"
+            className="mt-12 max-w-xl mx-auto text-center"
+          >
+            On discute de votre projet d'automatisation ou d'application?
           </CardTitle>
-          <div className="flex justify-center">
-            <Button className="mx-auto w-full" size="xl">
-              Me contacter
-            </Button>
-          </div>
+          <CardDescription className="text-center mb-4">
+            Remplissez le formulaire ci-dessous et je vous recontacte dans les
+            24-48 heures.
+          </CardDescription>
+          <ContactForm />
         </CardContent>
       </Card>
     </main>

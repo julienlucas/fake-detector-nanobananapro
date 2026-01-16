@@ -6,13 +6,15 @@ authors = [{name = "Julien Lucas", email = "hello@julienlucas.com"}]
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "django>=5.2.6",
+    "dotenv>=0.9.9",
+    "langsmith>=0.1.0",
     "numpy<2.0.0",
+    "onnxruntime>=1.16.0",
+    "onnxscript>=0.5.7",
     "pillow>=11.0.0",
     "python-dotenv>=1.1.1",
-    "werkzeug>=1.0.1",
-    "uvicorn>=0.24",
-    "onnxruntime>=1.16.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
-    "onnxscript>=0.5.7",
+    "uvicorn>=0.24",
+    "werkzeug>=1.0.1",
 ]

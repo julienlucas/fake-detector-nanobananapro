@@ -31,7 +31,7 @@ CardHeader.displayName = "CardHeader"
 
 const CardTitle = React.forwardRef<
   HTMLParagraphElement,
-  React.HTMLAttributes<HTMLHeadingElement> & { variant?: "h1" | "h2" | "h3" | "h4" }
+  React.HTMLAttributes<HTMLHeadingElement> & { variant?: "h1" | "h2" | "h3" | "h3-card" | "h4" }
 >(({ className, variant = "h3", ...props }, ref) => {
   if (variant === "h1") {
     return (
@@ -59,12 +59,25 @@ const CardTitle = React.forwardRef<
     );
   }
 
+  if (variant === "h3") {
+    return (
+      <h3
+        ref={ref}
+        className={cn(
+          "text-3xl font-semibold tracking-tight text-black pt-4 mb-[1rem] leading-9",
+          className
+        )}
+        {...props}
+      />
+    );
+  }
+
   if (variant === "h4") {
     return (
       <h4
         ref={ref}
         className={cn(
-          "text-2xl font-semibold tracking-tight text-black pt-4 mb-[.5rem] leading-10",
+          "text-2xl font-semibold tracking-tight text-black mb-[.5rem] leading-10",
           className
         )}
         {...props}
@@ -76,9 +89,10 @@ const CardTitle = React.forwardRef<
     <h3
       ref={ref}
       className={cn(
-        "text-3xl font-semibold tracking-tight text-black pt-4 mb-[1rem] leading-9",
+        "text-sm uppercase font-semibold tracking-tight bg-black text-white w-fit px-4 py-[.02rem] mt-10 mb-[1rem] leading-8",
         className
       )}
+      style={{ fontFamily: "'IBM Plex Mono', monospace" }}
       {...props}
     />
   );
