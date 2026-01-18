@@ -271,26 +271,22 @@ export default function Index() {
           <ul className="list-disc list-inside mb-4 space-y-4">
             <li>
               <strong>
-                Pouvoir détecter sur tous les modèles de diffusion
-              </strong>{" "}
-              : Le modèle devait fonctionner sur Nano Banana Pro mais aussi
-              Midjourney, Stable Diffusion, DALL-E (des modèles de diffusion
-              aussi).
+                Pouvoir détecter les images de TOUS les modèles de diffusion.
+              </strong> Le modèle ddoit fonctionner sur NanoBanana Pro mais aussi
+              Midjourney, Stable Diffusion, DALL-E.
             </li>
             <li>
-              <strong>Entraîner un modèle rapidement</strong> : Réutiliser les
-              connaissances pré-existantes d'un modèle de vision, d'abord le
-              MobileNetV3 Large sur ImageNet et tester de l'adapter à la
-              détection de fakes.
+              <strong>Entraîner un modèle rapidement et à moindre coût.</strong> Pour ça réutiliser les
+              connaissances pré-existantes d'un modèle de vision.
             </li>
             <li>
-              <strong>Avoir un modèle faible latence</strong> : Devait pouvoir
-              fonctionner en quelque secondes sur un mobile.
-            </li>
-            <li>
-              <strong>Créer un jeu de données</strong> : Combiner des datasets
-              scrappés sur Midjourney/DALL-E/SD et Nano Banana Pro pour une
+              <strong>Réussir à constiuer un jeu de données Nano Banana Pro par scrapping malgrés peu d'images disponibles.</strong> Puis combiner des datasets
+              scrappés Midjourney/DALL-E/SD et Nano Banana Pro pour une
               détection généralisée.
+            </li>
+            <li>
+              <strong>Avoir un modèle faible latence.</strong> Doit pouvoir
+              détecter en quelques secondes sur mobile.
             </li>
           </ul>
           <CardTitle variant="h3-card">Résultats et évaluation</CardTitle>
@@ -323,7 +319,7 @@ export default function Index() {
             </li>
             <li>
               <strong>
-                ⚡ Le modèle a une <span>très faible latence</span>.
+                ⚡ Le modèle a une <span>faible latence</span>.
               </strong>
               <img
                 src="/static/langsmith.png"
@@ -335,7 +331,7 @@ export default function Index() {
               </CardDescription>
             </li>
           </ul>
-          <p>Et voilà.</p>
+          <p>Et voilà. De bons résultats pour un POC, sans optimisations et avec un modèle très léger pourtant.</p>
           <CardTitle
             variant="h3"
             className="mt-12 max-w-xl mx-auto text-center"
