@@ -79,9 +79,8 @@ STATICFILES_DIRS = [BASE_DIR / "static", BASE_DIR / "frontend" / "dist"]
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://localhost:5173",
+    "https://fakefinder.vercel.app",
 ]
-# Add your Vercel domain here, e.g.:
-# CORS_ALLOWED_ORIGINS += ["https://your-app.vercel.app"]
 import os
 if os.environ.get("CORS_ALLOWED_ORIGIN"):
     CORS_ALLOWED_ORIGINS.append(os.environ.get("CORS_ALLOWED_ORIGIN"))
