@@ -5,18 +5,24 @@ description = "Détecteur de deepfakes avec Grad-CAM"
 authors = [{name = "Julien Lucas", email = "hello@julienlucas.com"}]
 requires-python = ">=3.11,<3.13"
 dependencies = [
+    # === Production (inférence) ===
     "django>=5.2.6",
-    "dotenv>=0.9.9",
+    "django-cors-headers>=4.3.0",
+    "python-dotenv>=1.1.1",
     "langsmith>=0.1.0",
     "numpy<2.0.0",
     "onnxruntime>=1.16.0",
-    "onnxscript>=0.5.7",
     "pillow>=11.0.0",
-    "python-dotenv>=1.1.1",
-    "torch>=2.2.0",
-    "torchmetrics>=1.8.2",
-    "torchvision>=0.15.0",
-    "tqdm>=4.67.1",
-    "uvicorn>=0.24",
-    "werkzeug>=1.0.1",
+
+    # === Training/Build (commenter en prod) ===
+    # "dotenv>=0.9.9",          # Doublon avec python-dotenv
+    # "onnxscript>=0.5.7",      # Conversion ONNX
+    # "torch>=2.2.0",           # PyTorch (build uniquement)
+    # "torchmetrics>=1.8.2",    # Métriques entraînement
+    # "torchvision>=0.15.0",   # Transforms/modèles (build uniquement)
+    # "tqdm>=4.67.1",          # Barres de progression
+
+    # === Inutilisés ===
+    # "uvicorn>=0.24",          # Serveur ASGI (Django utilise gunicorn/wsgi)
+    # "werkzeug>=1.0.1",        # Utilitaire WSGI non nécessaire
 ]
