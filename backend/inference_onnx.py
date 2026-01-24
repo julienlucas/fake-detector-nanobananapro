@@ -9,9 +9,11 @@ import torchvision.utils as vutils
 import argparse
 import os
 import onnxruntime as ort
+from pathlib import Path
 
-ONNX_MODEL_PATH = "./backend/model/best_model_nanobanana_pro.onnx"
-PTH_MODEL_PATH = "./backend/model/best_model_nanobanana_pro.pth"
+BASE_DIR = Path(__file__).resolve().parent
+ONNX_MODEL_PATH = str(BASE_DIR / "model" / "best_model_nanobanana_pro_int8.onnx")
+PTH_MODEL_PATH = str(BASE_DIR / "model" / "best_model_nanobanana_pro.pth")
 REAL_THRESHOLD = 0.7
 FAKE_THRESHOLD = 0.7
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
