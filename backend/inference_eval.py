@@ -12,8 +12,8 @@ from torchvision.datasets import ImageFolder
 from torchmetrics.classification import MulticlassConfusionMatrix
 from tqdm import tqdm
 
-PTH_MODEL_PATH = "./model/best_model_nanobanana_pro.pth"
-ONNX_MODEL_PATH = "./model/best_model_nanobanana_pro_int8.onnx"
+PTH_MODEL_PATH = "../models/best_mobilenetV3_nanobanana_pro.pth"
+ONNX_MODEL_PATH = "../models/best_mobilenetV3_nanobanana_pro_int8.onnx"
 # Chemin relatif depuis fakefinder-website/backend/ vers fake-detector-nanobananapro/
 DATASET_BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "fake-detector-nanobananapro")
 

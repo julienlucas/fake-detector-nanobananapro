@@ -11,9 +11,9 @@ from pathlib import Path
 # import torchvision.models as tv_models
 # import torchvision.transforms as transforms
 
-BASE_DIR = Path(__file__).resolve().parent
-ONNX_MODEL_PATH = str(BASE_DIR / "model" / "best_model_nanobanana_pro_int8.onnx")
-# PTH_MODEL_PATH = str(BASE_DIR / "model" / "best_model_nanobanana_pro.pth")  # Désactivé en prod
+BASE_DIR = Path(__file__).resolve().parent.parent
+ONNX_MODEL_PATH = str(BASE_DIR / "models" / "best_mobilenetV3_nanobanana_pro_int8.onnx")
+# PTH_MODEL_PATH = str(BASE_DIR / "models" / "best_model_nanobanana_pro.pth")  # Désactivé en prod
 REAL_THRESHOLD = 0.7
 FAKE_THRESHOLD = 0.7
 

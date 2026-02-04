@@ -13,9 +13,9 @@ from onnxruntime.quantization import quantize_static, quantize_dynamic, Calibrat
 # Supprimer les warnings de pre-processing (le pre-processing est déjà fait dans CalibrationReader)
 warnings.filterwarnings("ignore", message=".*pre-processing.*", category=UserWarning)
 
-MODEL_PATH = "./model/best_model_nanobanana_pro.pth"
-ONNX_FP32_PATH = "./model/best_model_nanobanana_pro_fp32.onnx"
-ONNX_INT8_PATH = "./model/best_model_nanobanana_pro_int8.onnx"
+MODEL_PATH = "../models/best_model_nanobanana_pro.pth"
+ONNX_FP32_PATH = "../models/best_model_nanobanana_pro_fp32.onnx"
+ONNX_INT8_PATH = "../models/best_mobilenetV3_nanobanana_pro_int8.onnx"
 DEVICE = torch.device("cpu")
 
 
