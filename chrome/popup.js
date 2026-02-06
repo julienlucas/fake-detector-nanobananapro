@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const resultInfo = document.getElementById('resultInfo');
   const loading = document.getElementById('loading');
   const statusDiv = document.getElementById('status');
+  const resetButton = document.getElementById('resetButton');
 
   // Gérer le drag & drop
   uploadArea.addEventListener('dragover', (e) => {
@@ -114,13 +115,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 5000);
   }
 
-  // Reset pour analyser une nouvelle image
+  // Fonction pour réinitialiser
+  function reset() {
+    previewSection.style.display = 'none';
+    uploadArea.style.display = 'flex';
+    resultInfo.innerHTML = '';
+    imageInput.value = '';
+    loading.style.display = 'none';
+    statusDiv.style.display = 'none';
+  }
+
+  // Bouton reset
+  resetButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    reset();
+  });
+
+  // Reset pour analyser une nouvelle image (clic sur upload area)
   uploadArea.addEventListener('click', () => {
     if (previewSection.style.display === 'block') {
-      previewSection.style.display = 'none';
-      uploadArea.style.display = 'flex';
-      resultInfo.innerHTML = '';
-      imageInput.value = '';
+      reset();
     }
   });
 });

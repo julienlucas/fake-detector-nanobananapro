@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FakeFinder IA vs Real</title>
+  <title>FakeFinder IA vs Réel</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>🔍 FakeFinder</h1>
-      <p class="subtitle">Détecteur d'Images IA</p>
+      <img src="logo.png" alt="Nano Banana Pro" class="logo">
+      <p class="subtitle">Détecteur d'images fake Nano Banana Pro et autres modèles de diffusion</p>
+      <br />
+      Précision globale du modèle : 90% (testé sur 2000 images réelles et fakes variées en entraînement, F1 score ~90% pour chaque classe)
+      Précision sur selfies smartphone : 80%</p>
+      <p>Faux positifs (réel détecté comme fake) : ~5%</p>
+      <p>Faites le test sur vos selfies et comparez avec l'IA</p>
     </div>
 
     <div id="modelStatus" class="model-status" style="display: none;">
@@ -21,22 +26,28 @@
     <div class="upload-section">
       <label for="imageInput" class="upload-label">
         <div class="upload-area" id="uploadArea">
-          <span class="upload-icon">📷</span>
+          <img src="3a4cc2b2-7d83-4b2b-b365-0bf08b9d0c99_min.webp" alt="Upload" class="upload-icon-img">
           <span class="upload-text">Cliquez pour sélectionner une image</span>
-          <span class="upload-hint">ou glissez-déposez ici</span>
+          <span class="upload-hint">ou glissez-déposez</span>
         </div>
         <input type="file" id="imageInput" accept="image/*" style="display: none;" />
       </label>
     </div>
 
-    <div id="previewSection" class="preview-section" style="display: none;">
+    <div id="previewSection" class="preview-section" style="position: relative; display: none;">
+      <div id="loading" class="loading" style="display: none;">
+        <div class="spinner"></div>
+        <p>Analyse en cours...</p>
+      </div>
+      <button id="resetButton" class="reset-button">✕</button>
       <img id="previewImage" class="preview-image" />
       <div id="resultInfo" class="result-info"></div>
     </div>
 
-    <div id="loading" class="loading" style="display: none;">
-      <div class="spinner"></div>
-      <p>Analyse en cours...</p>
+    <div class="footer">
+      <p>Fonctionne avec un modèle EfficientNet V2 S fine-tuné sur dataset de 12000 images variées Midjourney, DALL-E, SD, Nano Banana Pro et images réelles.</p>
+      <p>Le modèle a été entraîné à différencier le traitement logiciel (ex: les selfies au smartphone) vs la génération IA.</p>
+      <p>Développé par <a href="https://www.linkedin.com/in/julien-lucas-jl/" target="_blank">Julien Lucas</a> avec 💙</p>
     </div>
 
     <div id="status" class="status"></div>

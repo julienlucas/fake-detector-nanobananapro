@@ -3,6 +3,8 @@
   "name": "FakeFinder - Détecteur d'Images IA",
   "version": "2.0.0",
   "description": "Détecte si une image a été générée par une IA (Midjourney, DALL-E, Stable Diffusion) ou si elle est réelle — inférence 100% locale",
+  "author": "Julien Lucas",
+  "homepage_url": "https://fakefinder.vercel.app",
   "permissions": [
     "activeTab",
     "storage"

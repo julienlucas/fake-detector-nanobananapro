@@ -12,6 +12,8 @@ chroma_db
 frontend/node_modules/
 models/*.pth
 static/photos/
+AIvsReal_nanobanana_pro
+AIvsReal_midjourney_dalle_sd
 
 # C extensions
 *.so
