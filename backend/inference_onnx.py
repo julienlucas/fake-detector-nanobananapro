@@ -12,27 +12,7 @@ from pathlib import Path
 # import torchvision.transforms as transforms
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-HF_MODEL_URL = "https://huggingface.co/julienlucas/fakefinder/resolve/main/models/best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx"
-_LOCAL_MODEL = BASE_DIR / "models" / "best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx"
-_TMP_MODEL = Path("/tmp/fakefinder_model.onnx")
-
-
-def _get_model_path():
-    """Retourne le chemin du modèle : local si disponible, sinon télécharge dans /tmp."""
-    if _LOCAL_MODEL.exists():
-        return str(_LOCAL_MODEL)
-    if _TMP_MODEL.exists():
-        return str(_TMP_MODEL)
-    # Télécharger depuis HuggingFace (Vercel serverless)
-    import urllib.request
-    print(f"[ONNX] Downloading model from HuggingFace to {_TMP_MODEL}...")
-    urllib.request.urlretrieve(HF_MODEL_URL, str(_TMP_MODEL))
-    print(f"[ONNX] Model downloaded ({_TMP_MODEL.stat().st_size / 1e6:.1f} MB)")
-    return str(_TMP_MODEL)
-
-
-ONNX_MODEL_PATH = None  # Resolved lazily
+ONNX_MODEL_PATH = str(BASE_DIR / "models" / "best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx")
 # PTH_MODEL_PATH = str(BASE_DIR / "models" / "best_model_nanobanana_pro.pth")  # Désactivé en prod
 REAL_THRESHOLD = 0.7
 FAKE_THRESHOLD = 0.7
@@ -45,10 +25,8 @@ _input_name = None
 
 def get_onnx_session():
     """Retourne la session ONNX. Le modèle peut avoir ou non les features selon l'export."""
-    global _session, _expected_image_size, _input_name, ONNX_MODEL_PATH
+    global _session, _expected_image_size, _input_name
     if _session is None:
-        if ONNX_MODEL_PATH is None:
-            ONNX_MODEL_PATH = _get_model_path()
         _session = ort.InferenceSession(ONNX_MODEL_PATH)
         input_info = _session.get_inputs()[0]
         _input_name = input_info.name

@@ -2,7 +2,7 @@ let isAnalyzing = false;
 
 async function getBackendUrl() {
   const result = await chrome.storage.sync.get(['backendUrl']);
-  return result.backendUrl || 'https://fakefinder.vercel.app';
+  return result.backendUrl || 'https://fakefinder-nanobananapro.up.railway.app';
 }
 
 function createOverlay(image, result) {

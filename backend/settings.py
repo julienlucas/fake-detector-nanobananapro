@@ -75,70 +75,13 @@ AUTH_PASSWORD_VALIDATORS = [
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static", BASE_DIR / "frontend" / "dist"]
 
-# CORS - Configuration différente selon la plateforme
-import os
-
-# Détecter la plateforme de déploiement
-is_vercel = (
-    os.environ.get("VERCEL") == "1" 
-    or os.environ.get("VERCEL_ENV")
-    or "vercel" in os.environ.get("PATH", "").lower()
-    or os.environ.get("VERCEL_URL")
-)
-is_railway = os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")
-cors_origin = os.environ.get("CORS_ALLOWED_ORIGIN", "")
-
-# Debug: afficher la détection (à retirer en prod si besoin)
-print(f"[CORS DEBUG] is_vercel={is_vercel}, is_railway={is_railway}, cors_origin={cors_origin}")
-
-if is_vercel:
-    # Sur Vercel : CORS pour localhost et extensions Chrome
-    CORS_ALLOWED_ORIGINS = [
-        "http://localhost:8080",
-        "http://localhost:5173",
-    ]
-    CORS_ALLOWED_ORIGIN_REGEXES = [
-        r"^chrome-extension://.*$",
-    ]
-    CORS_ALLOW_CREDENTIALS = True
-    print("[CORS] Configuration Vercel")
-elif is_railway:
-    # Sur Railway : CORS pour le frontend Vercel, localhost et extensions Chrome
-    CORS_ALLOWED_ORIGINS = [
-        "http://localhost:8080",
-        "http://localhost:5173",
-        "https://fakefinder.vercel.app",
-    ]
-    CORS_ALLOWED_ORIGIN_REGEXES = [
-        r"^chrome-extension://.*$",
-    ]
-    if cors_origin and cors_origin != "*":
-        origins = [origin.strip() for origin in cors_origin.split(",")]
-        CORS_ALLOWED_ORIGINS.extend(origins)
-    print(f"[CORS] Configuration Railway: origins={CORS_ALLOWED_ORIGINS}")
-else:
-    # Local : CORS pour développement + extensions Chrome
-    CORS_ALLOWED_ORIGINS = [
-        "http://localhost:8080",
-        "http://localhost:5173",
-    ]
-    CORS_ALLOWED_ORIGIN_REGEXES = [
-        r"^chrome-extension://.*$",
-    ]
-    if cors_origin and cors_origin != "*":
-        CORS_ALLOWED_ORIGINS.append(cors_origin)
-
-# Autoriser les headers nécessaires pour les extensions Chrome
-CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
+# CORS
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:8080",
+    "http://localhost:5173",
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^chrome-extension://.*$",
 ]
 
 # Internationalization

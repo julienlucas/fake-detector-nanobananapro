@@ -88,8 +88,7 @@ export default function Index() {
 
       body.append("file", fileToUpload);
 
-      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      const baseUrl = import.meta.env.VITE_API_URL || (isLocalhost ? 'https://fakefinder.vercel.app' : '');
+      const baseUrl = import.meta.env.VITE_RAILWAY_API_URL || "";
       const response = await fetch(
         `${baseUrl}/api/inference`,
         {

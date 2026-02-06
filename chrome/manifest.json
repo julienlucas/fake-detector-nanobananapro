@@ -9,7 +9,7 @@
   ],
   "host_permissions": [
     "http://localhost:8080/*",
-    "https://fakefinder.vercel.app/*",
+    "https://fakefinder-nanobananapro.up.railway.app/*",
     "https://*/*"
   ],
   "action": {
