@@ -5,9 +5,7 @@ description = "Détecteur de deepfakes Nano Banana Pro et images générées ave
 authors = [{name = "Julien Lucas", email = "hello@julienlucas.com"}]
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    # PRODUCTION - Dépendances nécessaires pour l'inférence ONNX
-    "django>=5.2.6",
-    "django-cors-headers>=4.3.0",
+    # Dépendances minimales pour l'inférence ONNX (Vercel serverless)
     "python-dotenv>=1.1.1",
     "numpy<2.0.0",
     "onnxruntime>=1.16.0",
@@ -15,6 +13,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "django>=5.2.6",
+    "django-cors-headers>=4.3.0",
+]
 tracking = [
     "langsmith>=0.1.0",
 ]
