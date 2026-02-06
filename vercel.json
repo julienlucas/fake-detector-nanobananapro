@@ -5,7 +5,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 60,
-      "includeFiles": "backend/**,models/best_f191.5*.onnx"
+      "includeFiles": "backend/**"
     }
   },
   "rewrites": [
