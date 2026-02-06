@@ -11,6 +11,7 @@ document_cache
 chroma_db
 frontend/node_modules/
 models/*.pth
+static/photos/
 
 # C extensions
 *.so

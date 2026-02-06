@@ -3,11 +3,13 @@
 Application web permettant de détecter si une image a été générée par une Intelligence Artificielle (Midjourney, DALL-E, Stable Diffusion et NanoBananaPro) ou si elle est réelle.
 
 
-*   **Précision globale :** 90% (score F1 90%, testé sur 2000 images)
+*   **Précision globale :** 90% (score F1 90%, testé sur 2000 images de validation)
 *   **Précision selfies smartphone :** 80%
 
 ![Fakefinder](./static/header.png)
 
+## 📁 Dataset
+C
 
 ## 🏗 Architecture
 
