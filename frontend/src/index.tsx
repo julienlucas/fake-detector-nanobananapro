@@ -202,7 +202,18 @@ export default function Index() {
               disabled={loading || !preview}
             >
               <Search className="h-4 w-4" />
-              {loading ? "Analyse en cours..." : "Analyser l'image"}
+              {loading ? (
+                <>
+                  Analyse en cours
+                  <span className="inline-flex ml-1 gap-0.5">
+                    <span className="animate-dot-pulse" style={{ animationDelay: '0ms' }}>.</span>
+                    <span className="animate-dot-pulse" style={{ animationDelay: '200ms' }}>.</span>
+                    <span className="animate-dot-pulse" style={{ animationDelay: '400ms' }}>.</span>
+                  </span>
+                </>
+              ) : (
+                "Analyser l'image"
+              )}
             </Button>
           </div>
           <div className="relative -top-4">

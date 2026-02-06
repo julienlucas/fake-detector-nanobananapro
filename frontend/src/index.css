@@ -144,3 +144,16 @@ li span {
 .animate-ripple {
   animation: ripple var(--duration, 3s) ease calc(var(--i, 0) * 0.4s) infinite;
 }
+
+@keyframes dot-pulse {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-dot-pulse {
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
