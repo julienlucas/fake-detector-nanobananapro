@@ -19,7 +19,9 @@ export default function Index() {
   const [preview, setPreview] = useState<string | null>("/static/3a4cc2b2-7d83-4b2b-b365-0bf08b9d0c99_min.webp");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{label: string, confidence: number, real_confidence: number, fake_confidence: number, image?: string} | null>(null);
-  const [selectedExampleImage, setSelectedExampleImage] = useState<string>("/static/fake-1.png");
+  const [selectedExampleImage, setSelectedExampleImage] = useState<string>(
+    "/static/fake-nocam.png",
+  );
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -140,7 +142,7 @@ export default function Index() {
           Testé sur 2000 images diverses (ainsi que des selfies smartphone
           spécifiquement)
           <br />
-          Précision globale: 90% (et 91% de score F1 — soit un niveau de confiance affuté)
+          Précision globale: 90% (et 90% de score F1 — soit un niveau de confiance affuté)
         </CardDescription>
       </CardHeader>
       <Card className="border-none shadow-none">
@@ -205,7 +207,7 @@ export default function Index() {
               {loading ? (
                 <>
                   Analyse en cours
-                  <span className="inline-flex ml-1 gap-0.5">
+                  <span className="inline-flex">
                     <span className="animate-dot-pulse" style={{ animationDelay: '0ms' }}>.</span>
                     <span className="animate-dot-pulse" style={{ animationDelay: '200ms' }}>.</span>
                     <span className="animate-dot-pulse" style={{ animationDelay: '400ms' }}>.</span>
@@ -218,7 +220,7 @@ export default function Index() {
           </div>
           <div className="relative -top-4">
             <CardDescription className="mb-4 italic text-sm">
-              Exemple de détection (la heatmap indique les zones d'activation)
+              Fenètre de détection (le niveau de confiance affiché est fiable)
             </CardDescription>
             <div className="relative rotate-[3deg]">
               <img

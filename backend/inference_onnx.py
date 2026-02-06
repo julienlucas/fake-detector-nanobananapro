@@ -16,6 +16,7 @@ ONNX_MODEL_PATH = str(BASE_DIR / "models" / "best_f191.5_acc91.5_efficientnetv2s
 # PTH_MODEL_PATH = str(BASE_DIR / "models" / "best_model_nanobanana_pro.pth")  # Désactivé en prod
 REAL_THRESHOLD = 0.7
 FAKE_THRESHOLD = 0.7
+ENABLE_CAM = False
 
 _session = None
 _expected_image_size = None
@@ -23,6 +24,7 @@ _input_name = None
 # _pytorch_model = None  # Désactivé en prod
 
 def get_onnx_session():
+    """Retourne la session ONNX. Le modèle peut avoir ou non les features selon l'export."""
     global _session, _expected_image_size, _input_name
     if _session is None:
         _session = ort.InferenceSession(ONNX_MODEL_PATH)
@@ -45,7 +47,13 @@ def get_input_name():
         get_onnx_session()
     return _input_name
 
-def draw_bboxes_numpy(pil_image, boxes, labels, bbox_colors, bbox_width=6, font_size=54, text_offset=14, stroke_width=0, padding_left=24, padding_bottom=24):
+def has_cam_support():
+    """Vérifie si le modèle actuel supporte CAM (a une sortie 'features')."""
+    session = get_onnx_session()
+    output_names = [out.name for out in session.get_outputs()]
+    return 'features' in output_names
+
+def draw_bboxes_numpy(pil_image, boxes, labels, bbox_colors, bbox_width=6, font_size=54, text_offset=14, stroke_width=0, padding_left=24, padding_bottom=24, text_padding_left=8, text_padding_bottom=8):
     """Dessine des bboxes sur une image PIL (sans torch)."""
     COLOR_MAP = {"red": (255, 0, 0), "green": (0, 200, 0)}
     FONT_CANDIDATES = [
@@ -71,6 +79,9 @@ def draw_bboxes_numpy(pil_image, boxes, labels, bbox_colors, bbox_width=6, font_
         return ImageFont.load_default(), False
 
     # Dessiner les bboxes avec PIL
+    if pil_image.mode != 'RGBA':
+        pil_image = pil_image.convert('RGBA')
+
     img_array = np.array(pil_image)
     draw = ImageDraw.Draw(pil_image)
     font, is_truetype = _load_font(font_size)
@@ -121,11 +132,105 @@ def softmax_np(x):
     e_x = np.exp(x - np.max(x))
     return e_x / e_x.sum()
 
-def predict_with_gradcam(pil_image):
+def generate_cam_heatmap(features, pred_idx, original_size):
+    """
+    Génère une heatmap CAM approximative à partir des features.
+    Pour un CAM complet, il faudrait les poids de classification, mais on utilise
+    une approximation basée sur l'activation moyenne des features.
+
+    Args:
+        features: Activations de la dernière couche convolutive [1, C, H, W]
+        pred_idx: Index de la classe prédite (0=fake, 1=real)
+        original_size: Taille originale de l'image (width, height)
+
+    Returns:
+        Heatmap normalisée [H, W] prête à être superposée sur l'image
+    """
+    if len(features.shape) != 4 or features.shape[0] != 1:
+        return None
+
+    _, C, H, W = features.shape
+
+    cam = np.zeros((H, W), dtype=np.float32)
+
+    for i in range(C):
+        feature_map = features[0, i, :, :]
+        if pred_idx == 0:
+            cam += np.maximum(feature_map, 0)
+        else:
+            cam += np.maximum(feature_map, 0)
+
+    cam = cam / C
+    cam = np.maximum(cam, 0)
+    cam = cam / (cam.max() + 1e-8)
+
+    cam_resized = Image.fromarray((cam * 255).astype(np.uint8))
+    cam_resized = cam_resized.resize(original_size, Image.Resampling.BILINEAR)
+    cam_resized = np.array(cam_resized) / 255.0
+
+    return cam_resized
+
+def jet_colormap(x):
+    """
+    Applique la colormap 'jet' (bleu -> cyan -> vert -> jaune -> rouge) sans matplotlib.
+    x doit être entre 0 et 1.
+    """
+    x = np.clip(x, 0, 1)
+    x_4 = x * 4.0
+    r = np.clip(np.minimum(x_4 - 1.5, -x_4 + 4.5), 0, 1)
+    g = np.clip(np.minimum(x_4 - 0.5, -x_4 + 3.5), 0, 1)
+    b = np.clip(np.minimum(x_4 + 0.5, -x_4 + 2.5), 0, 1)
+    return np.stack([r, g, b], axis=-1)
+
+def overlay_heatmap(pil_image, heatmap, alpha=0.4):
+    """
+    Superpose une heatmap sur une image PIL (sans matplotlib).
+
+    Args:
+        pil_image: Image PIL originale
+        heatmap: Heatmap normalisée [H, W] entre 0 et 1
+        alpha: Transparence de la heatmap (0-1)
+
+    Returns:
+        Image PIL avec heatmap superposée
+    """
+    img_array = np.array(pil_image, dtype=np.float32)
+    h, w = heatmap.shape[:2]
+
+    if img_array.shape[:2] != (h, w):
+        heatmap_resized = Image.fromarray((heatmap * 255).astype(np.uint8))
+        heatmap_resized = heatmap_resized.resize((w, h), Image.Resampling.BILINEAR)
+        heatmap = np.array(heatmap_resized) / 255.0
+
+    heatmap_colored = jet_colormap(heatmap)
+    heatmap_colored = (heatmap_colored * 255).astype(np.uint8)
+
+    if len(img_array.shape) == 2:
+        img_array = np.stack([img_array] * 3, axis=-1)
+    elif img_array.shape[2] == 4:
+        img_array = img_array[:, :, :3]
+
+    overlay = (alpha * heatmap_colored + (1 - alpha) * img_array).astype(np.uint8)
+
+    return Image.fromarray(overlay)
+
+def predict_with_gradcam(pil_image, use_cam=False):
+    """
+    Prédit si une image est fake ou real avec option CAM (Class Activation Mapping).
+
+    Args:
+        pil_image: Image PIL à analyser
+        use_cam: Si True, génère une heatmap CAM (nécessite modèle exporté avec features)
+                 Utilise ONNX_MODEL_PATH_CAM si disponible, sinon ONNX_MODEL_PATH
+
+    Returns:
+        result_img, pred_label, conf, real_conf, fake_conf
+    """
     session = get_onnx_session()
     image_size = get_expected_image_size()
 
     w, h = pil_image.size
+    original_size = (w, h)
 
     imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -137,8 +242,14 @@ def predict_with_gradcam(pil_image):
     input_tensor = img_array[np.newaxis, ...]
 
     input_name = get_input_name()
-    outputs = session.run(None, {input_name: input_tensor})
-    logits = outputs[0][0]
+    output_names = [out.name for out in session.get_outputs()]
+
+    outputs = session.run(output_names, {input_name: input_tensor})
+
+    if 'features' in output_names and 'output' in output_names:
+        logits = outputs[output_names.index('output')][0]
+    else:
+        logits = outputs[0][0]
 
     probs = softmax_np(logits)
     real_conf = float(probs[1])
@@ -155,12 +266,27 @@ def predict_with_gradcam(pil_image):
     pred_label = class_names[pred_idx]
     conf = float(probs[pred_idx])
 
+    result_img = pil_image.copy()
+
+    if use_cam and ENABLE_CAM and len(outputs) >= 2:
+        try:
+            if 'features' in output_names:
+                features_idx = output_names.index('features')
+                features = outputs[features_idx]
+
+                if len(features.shape) == 4:
+                    heatmap = generate_cam_heatmap(features, pred_idx, original_size)
+                    if heatmap is not None:
+                        result_img = overlay_heatmap(result_img, heatmap, alpha=0.4)
+        except Exception:
+            pass
+
     boxes = [[0, 0, w - 1, h - 1]]
     color = "red" if pred_idx == 0 else "green"
-    base_font_size = max(32, int(min(w, h) * 0.05))
+    base_font_size = max(32, int(min(w, h) * 0.06))
 
     result_img = draw_bboxes_numpy(
-        pil_image.copy(),
+        result_img,
         boxes=boxes,
         labels=[f"{pred_label[:1].upper()}{pred_label[1:]} {conf * 100:.1f}%"],
         bbox_colors=[color],

@@ -90,7 +90,7 @@ def inference_api(request):
 
         pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
 
-        result_image, pred_label, conf, real_conf, fake_conf = predict_with_gradcam(pil_image)
+        result_image, pred_label, conf, real_conf, fake_conf = predict_with_gradcam(pil_image, use_cam=True)
 
         img_buffer = io.BytesIO()
         result_image.save(img_buffer, format='PNG')

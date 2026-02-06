@@ -1,34 +1,48 @@
 import os
-import random
 import torch
 import numpy as np
 import onnxruntime as ort
 import lightning.pytorch as pl
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset, ConcatDataset
+from PIL import Image
+from torchvision import transforms
+from torch.utils.data import DataLoader, Dataset
 
 import utils.helper_utils as helper_utils
 
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-data_base_dir = os.path.join(base_dir, "..", "fake-detector-nanobananapro")
-DATA_DIRS = [
-    os.path.join(data_base_dir, "AIvsReal_nanobanana_pro"),
-    os.path.join(data_base_dir, "AIvsReal_midjourney_dalle_sd"),
-]
-MAX_PER_DATASET = 250
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(_script_dir, "photos")
 
 # Choisir le modèle : définir l'un des deux (l'autre à None)
-ONNX_MODEL_PATH = "../models/best_mobilenetV3_fake_detector_int8.onnx"
+ONNX_MODEL_PATH = "./models/best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx"
 MODEL_PATH = None
 
 IMAGE_SIZE = 384
+IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+class FlatImageFolder(Dataset):
+    def __init__(self, root, transform=None):
+        self.transform = transform
+        self.files = []
+        for f in sorted(os.listdir(root)):
+            if os.path.splitext(f)[1].lower() in IMG_EXT:
+                self.files.append(os.path.join(root, f))
+        self.classes = ["fake", "real"]
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.files[idx]).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
+        return img, 0
 
 
 class ChestXRayDataModule(pl.LightningDataModule):
-    def __init__(self, data_dirs, max_per_dataset=250, batch_size=32, image_size=384):
+    def __init__(self, data_dir, batch_size=32, image_size=384):
         super().__init__()
-        self.data_dirs = data_dirs
-        self.max_per_dataset = max_per_dataset
+        self.data_dir = data_dir
         self.batch_size = batch_size
         self.val_transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
@@ -40,21 +54,10 @@ class ChestXRayDataModule(pl.LightningDataModule):
         self.class_names = None
 
     def setup(self, stage=None):
-        rng = random.Random(42)
-        parts = []
-        for data_dir in self.data_dirs:
-            test_dir = os.path.join(data_dir, "test")
-            if not os.path.exists(test_dir):
-                continue
-            ds = datasets.ImageFolder(test_dir, self.val_transform)
-            n = min(self.max_per_dataset, len(ds))
-            indices = rng.sample(range(len(ds)), n)
-            parts.append(Subset(ds, indices))
-            if self.class_names is None:
-                self.class_names = ds.classes
-        if not parts:
-            raise FileNotFoundError(f"Aucun répertoire test trouvé dans {self.data_dirs}")
-        self.val_dataset = ConcatDataset(parts)
+        if not os.path.isdir(self.data_dir):
+            raise FileNotFoundError(f"Répertoire introuvable: {self.data_dir}")
+        self.val_dataset = FlatImageFolder(self.data_dir, self.val_transform)
+        self.class_names = self.val_dataset.classes
 
     def val_dataloader(self):
         return DataLoader(
@@ -74,11 +77,6 @@ class ONNXModelWrapper:
         input_shape = self.session.get_inputs()[0].shape
         self.supports_batch = input_shape[0] == 'batch_size' or input_shape[0] is None
 
-        if len(input_shape) >= 3 and isinstance(input_shape[-1], int):
-            self.expected_size = input_shape[-1]
-        else:
-            self.expected_size = None
-
     def eval(self):
         return self
 
@@ -89,19 +87,18 @@ class ONNXModelWrapper:
         if isinstance(x, torch.Tensor):
             x = x.cpu().numpy().astype(np.float32)
 
-        batch_size = x.shape[0]
-        outputs_list = []
-        for i in range(batch_size):
-            single_input = x[i:i+1]
-            try:
+        if self.supports_batch:
+            output = self.session.run(None, {self.input_name: x})
+            return torch.from_numpy(output[0])
+        else:
+            batch_size = x.shape[0]
+            outputs_list = []
+            for i in range(batch_size):
+                single_input = x[i:i+1]
                 output = self.session.run(None, {self.input_name: single_input})
                 outputs_list.append(output[0])
-            except Exception as e:
-                single_input_flat = single_input.reshape(1, -1) if len(single_input.shape) > 2 else single_input
-                output = self.session.run(None, {self.input_name: single_input_flat})
-                outputs_list.append(output[0])
-        outputs = np.concatenate(outputs_list, axis=0)
-        return torch.from_numpy(outputs)
+            outputs = np.concatenate(outputs_list, axis=0)
+            return torch.from_numpy(outputs)
 
 
 import torch.nn as nn
@@ -161,36 +158,30 @@ def load_efficientnetv2s_model(checkpoint_path, num_classes=2):
 
 
 def main():
-    for d in DATA_DIRS:
-        test_dir = os.path.join(d, "test")
-        if not os.path.exists(test_dir):
-            raise FileNotFoundError(f"Répertoire test introuvable: {test_dir}")
+    if not os.path.exists(DATA_DIR):
+        raise FileNotFoundError(f"Répertoire introuvable: {DATA_DIR}")
 
     if ONNX_MODEL_PATH and os.path.exists(ONNX_MODEL_PATH):
         use_onnx = True
         model_path = ONNX_MODEL_PATH
-        temp_wrapper = ONNXModelWrapper(model_path)
-        image_size = temp_wrapper.expected_size if temp_wrapper.expected_size else IMAGE_SIZE
-        trained_model = temp_wrapper
-        model_desc = "ONNX"
-        if temp_wrapper.expected_size and temp_wrapper.expected_size != IMAGE_SIZE:
-            print(f"Modèle ONNX attend {temp_wrapper.expected_size}x{temp_wrapper.expected_size}, utilisation de cette taille")
     elif MODEL_PATH and os.path.exists(MODEL_PATH):
         use_onnx = False
         model_path = MODEL_PATH
-        image_size = IMAGE_SIZE
     else:
         raise FileNotFoundError(
             "Aucun modèle disponible. Définir ONNX_MODEL_PATH ou MODEL_PATH en haut du fichier."
         )
 
-    dm = ChestXRayDataModule(DATA_DIRS, max_per_dataset=MAX_PER_DATASET, batch_size=32, image_size=image_size)
+    dm = ChestXRayDataModule(DATA_DIR, batch_size=32, image_size=IMAGE_SIZE)
     dm.setup()
 
     num_classes = len(dm.class_names)
     device = torch.device("cpu")
 
-    if not use_onnx:
+    if use_onnx:
+        trained_model = ONNXModelWrapper(model_path)
+        model_desc = "ONNX"
+    else:
         trained_model = load_efficientnetv2s_model(model_path, num_classes=num_classes)
         trained_model = trained_model.to(device).eval()
         model_desc = "PyTorch"
@@ -199,7 +190,7 @@ def main():
     from tqdm import tqdm
 
     all_preds = []
-    all_labels = []
+    all_labels_list = []
 
     val_loader_with_progress = tqdm(
         dm.val_dataloader(),
@@ -220,30 +211,37 @@ def main():
         preds = torch.argmax(outputs, 1)
 
         all_preds.append(preds.cpu())
-        all_labels.append(labels.cpu())
+        all_labels_list.append(labels.cpu())
 
     all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
+    class_names = dm.class_names
+    flat_ds = getattr(dm.val_dataset, "files", None)
 
+    if flat_ds is not None:
+        n_fake = (all_preds == 0).sum().item()
+        n_real = (all_preds == 1).sum().item()
+        print("--- Prédictions (dossier sans labels) ---")
+        for path, pred in zip(flat_ds, all_preds.tolist()):
+            print(f"  {os.path.basename(path)} -> {class_names[pred]}")
+        print(f"\nRésumé: {n_fake} fake, {n_real} real")
+        return
+
+    all_labels = torch.cat(all_labels)
+    from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, Precision, Recall
     confmat = MulticlassConfusionMatrix(num_classes=num_classes).to(device)
     cm = confmat(all_preds, all_labels)
-
     f1_macro = F1Score(task="multiclass", num_classes=num_classes, average='macro').to(device)
     f1_per_class = F1Score(task="multiclass", num_classes=num_classes, average='none').to(device)
     precision = Precision(task="multiclass", num_classes=num_classes, average='none').to(device)
     recall = Recall(task="multiclass", num_classes=num_classes, average='none').to(device)
-
     f1_macro_score = f1_macro(all_preds, all_labels)
     f1_per_class_scores = f1_per_class(all_preds, all_labels)
     precision_scores = precision(all_preds, all_labels)
     recall_scores = recall(all_preds, all_labels)
-
     per_class_acc = cm.diag() / cm.sum(axis=1)
     total = cm.sum().item()
     correct = cm.diag().sum().item()
     acc_global = (correct / total) if total else 0.0
-    class_names = dm.class_names
-
     print("--- Rapport de précision par classe ---")
     print(f"Précision globale (Accuracy) : {acc_global:.4f}")
     print(f"F1 Score (macro) : {f1_macro_score.item():.4f}")
@@ -255,7 +253,6 @@ def main():
         print(f"  - Recall : {recall_scores[i].item():.4f}")
         print(f"  - F1 Score : {f1_per_class_scores[i].item():.4f}")
     print()
-
     helper_utils.plot_confusion_matrix(cm.cpu().numpy(), class_names)
 
 
