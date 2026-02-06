@@ -143,6 +143,7 @@ export default function Index() {
           spécifiquement)
           <br />
           Précision globale: 90% (et 90% de score F1 — soit un niveau de confiance affuté)
+          Précision sur selfies smartphone: 80%
         </CardDescription>
       </CardHeader>
       <Card className="border-none shadow-none">
