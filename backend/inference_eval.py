@@ -12,8 +12,9 @@ from torchvision.datasets import ImageFolder
 from torchmetrics.classification import MulticlassConfusionMatrix
 from tqdm import tqdm
 
-PTH_MODEL_PATH = "../models/best_mobilenetV3_nanobanana_pro.pth"
-ONNX_MODEL_PATH = "../models/best_mobilenetV3_nanobanana_pro_int8.onnx"
+
+ONNX_MODEL_PATH = "../models/best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx"
+PTH_MODEL_PATH = None
 # Chemin relatif depuis fakefinder-website/backend/ vers fake-detector-nanobananapro/
 DATASET_BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "fake-detector-nanobananapro")
 
@@ -35,8 +36,13 @@ def load_mobilenetv3_model(weights_path, num_classes=2):
 
 class ONNXModelWrapper:
     def __init__(self, onnx_path):
-        self.session = ort.InferenceSession(onnx_path)
-        self.eval()
+        self.session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+        self.input_name = self.session.get_inputs()[0].name
+        input_shape = self.session.get_inputs()[0].shape
+        if len(input_shape) >= 3 and isinstance(input_shape[-1], int):
+            self.expected_size = input_shape[-1]
+        else:
+            self.expected_size = 384
 
     def eval(self):
         return self
@@ -47,15 +53,21 @@ class ONNXModelWrapper:
     def __call__(self, x):
         if isinstance(x, torch.Tensor):
             x = x.cpu().numpy().astype(np.float32)
-        outputs = self.session.run(None, {"input": x})
-        return torch.from_numpy(outputs[0])
+        batch_size = x.shape[0]
+        outputs_list = []
+        for i in range(batch_size):
+            single_input = x[i:i+1]
+            output = self.session.run(None, {self.input_name: single_input})
+            outputs_list.append(output[0])
+        outputs = np.concatenate(outputs_list, axis=0)
+        return torch.from_numpy(outputs)
 
 
-def create_test_dataloader(dataset_path, batch_size=32):
+def create_test_dataloader(dataset_path, batch_size=32, image_size=384):
     """Crée un DataLoader pour le dataset de test."""
     test_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.CenterCrop(224),
+        transforms.Resize((image_size, image_size)),
+        transforms.CenterCrop(image_size),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
@@ -75,10 +87,10 @@ def create_test_dataloader(dataset_path, batch_size=32):
     return test_loader, test_dataset
 
 
-def evaluate_model_on_dataset(model, model_type, dataset_path, dataset_name, device):
+def evaluate_model_on_dataset(model, model_type, dataset_path, dataset_name, device, image_size=384):
     """Évalue un modèle sur un dataset spécifique."""
     batch_size = 1 if model_type == "onnx" else 32
-    test_loader, test_dataset = create_test_dataloader(dataset_path, batch_size=batch_size)
+    test_loader, test_dataset = create_test_dataloader(dataset_path, batch_size=batch_size, image_size=image_size)
 
     all_preds = []
     all_labels = []
@@ -171,16 +183,25 @@ def main():
         else:
             model_type = args.model_type
     else:
-        model_path = PTH_MODEL_PATH
-        model_type = "pth"
+        if ONNX_MODEL_PATH and os.path.exists(ONNX_MODEL_PATH):
+            model_path = ONNX_MODEL_PATH
+            model_type = "onnx"
+        elif PTH_MODEL_PATH and os.path.exists(PTH_MODEL_PATH):
+            model_path = PTH_MODEL_PATH
+            model_type = "pth"
+        else:
+            raise FileNotFoundError("Aucun modèle disponible. Définir --model-path ou ONNX_MODEL_PATH/PTH_MODEL_PATH")
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Modèle introuvable: {model_path}")
 
     # Charger le modèle selon son type
+    image_size = 384
     if model_type == "onnx":
         print(f"Chargement du modèle ONNX: {model_path}")
         model = ONNXModelWrapper(model_path)
+        image_size = model.expected_size
+        print(f"Taille d'image détectée: {image_size}x{image_size}")
     else:
         print(f"Chargement du modèle PyTorch: {model_path}")
         model = load_mobilenetv3_model(model_path, num_classes=2)
@@ -202,7 +223,7 @@ def main():
             print(f"⚠️  Dataset introuvable: {dataset_path}, ignoré")
             continue
 
-        result = evaluate_model_on_dataset(model, model_type, dataset_path, dataset_name, device)
+        result = evaluate_model_on_dataset(model, model_type, dataset_path, dataset_name, device, image_size=image_size)
         results.append(result)
 
     # Résumé global

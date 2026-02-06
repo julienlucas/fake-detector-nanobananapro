@@ -3,7 +3,6 @@ import { cn } from "@/lib/utils";
 import { Upload, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
-import { Ripple } from "@/components/ui/shadcn-io/ripple";
 import ContactForm from "@/components/ui/contact-form";
 
 const exampleImages = [
@@ -131,16 +130,17 @@ export default function Index() {
             Fakefinder
           </span>
         </CardTitle>
-        <CardDescription className="text-center text-2xl font-bold text-black">
-          Détectez les fakes Nano Banana Pro
+        <CardDescription className="text-center text-2xl font-bold text-black mx-auto max-w-md">
+          Détectez les fakes Nano Banana Pro et images générées avec l'IA
         </CardDescription>
-        <CardDescription className="text-center text-sm">
-          <strong>Modèle fine-tuné</strong> détectant aussi les images de
-          diffusion Midjourney, SD et DALL-E
+        <CardDescription className="text-center text-sm mx-auto max-w-xl">
+          <strong>Modèle fine-tuné par deep learning</strong> détectant aussi
+          les images de diffusion Midjourney, SD et DALL-E
           <br />
-          Testé sur 2000 images
+          Testé sur 2000 images diverses (ainsi que des selfies smartphone
+          spécifiquement)
           <br />
-          Précision: 85%
+          Précision globale: 90% (et 91% de score F1 — soit un niveau de confiance affuté)
         </CardDescription>
       </CardHeader>
       <Card className="border-none shadow-none">
@@ -264,64 +264,83 @@ export default function Index() {
           >
             Étude de cas
           </CardTitle>
-          <CardTitle variant="h3-card" className="mb-0 mt-4">Le challenge</CardTitle>
+          <CardTitle variant="h3-card" className="mb-0 mt-4">
+            Le challenge
+          </CardTitle>
           <CardTitle variant="h3" className="font-medium">
-            Détecter les fakes avec précision avec un entraînement rapide, peu couteux et
-            un modèle léger
+            Détecter les fakes IA avec précision et un niveau de confiance solide mais aussi un modèle à faible latence
           </CardTitle>
           <ul className="list-disc list-inside mb-4 space-y-4">
             <li>
               <strong>
                 Pouvoir détecter les images de TOUS les modèles de diffusion.
-              </strong> Le modèle ddoit fonctionner sur NanoBanana Pro mais aussi
+              </strong>{" "}
+              Le modèle ddoit fonctionner sur NanoBanana Pro mais aussi
               Midjourney, Stable Diffusion, DALL-E.
             </li>
             <li>
-              <strong>Entraîner un modèle rapidement et à moindre coût.</strong> Pour ça réutiliser les
-              connaissances pré-existantes d'un modèle de vision.
+              <strong>Entraîner un modèle rapidement et à moindre coût.</strong>{" "}
+              Pour ça réutiliser les connaissances pré-existantes d'un modèle de
+              vision.
             </li>
             <li>
-              <strong>Réussir à constiuer un jeu de données Nano Banana Pro par scrapping malgrés peu d'images disponibles.</strong> Puis combiner des datasets
-              scrappés Midjourney/DALL-E/SD et Nano Banana Pro pour une
-              détection généralisée.
+              <strong>
+                Réussir à constiuer un jeu de données Nano Banana Pro par
+                scrapping malgrés peu d'images disponibles.
+              </strong>{" "}
+              Puis combiner des datasets scrappés Midjourney/DALL-E/SD et Nano
+              Banana Pro pour une détection généralisée.
             </li>
             <li>
-              <strong>Avoir un modèle faible latence.</strong> Doit pouvoir
-              détecter en quelques secondes sur mobile.
+              <strong>
+                Créer un modèle capable de discerner le pré-trainement logiciel
+                vs l'IA.
+              </strong>{" "}
+              Exemple: discener des selfies générés avec un Iphone qui lissent
+              la peau d'images IA spécifiquement.
+            </li>
+            <li>
+              <strong>Avoir un modèle faible latence</strong> qui doit pouvoir
+              détecter quasi instantanément.
             </li>
           </ul>
           <CardTitle variant="h3-card">Résultats et évaluation</CardTitle>
           <ul className="list-inside mb-4 space-y-4">
             <li>
-              <strong>🎯 Précision élevée rapidement atteinte</strong> : 8,5/10
-              image détectées correctement sur le dataset de test de 2000 images
-              Midjourney/DALL-E/SD/Nano Banana Pro
-            </li>
-            <li>
               <strong>
-                ⌛ <span>Entraînement en seulement 3 minutes</span> juste avec
-                un Mac Pro M1
-              </strong>
-              , 1 seule passe sur le jeu de donnée!
-            </li>
-            <li>
-              <strong>
-                🧠 Fine-tuning <span>d'un modèle très léger</span>, le
-                MobileNetV3 Large par Transfer Learning
+                ⌛ Entraînement tout d'abord en transfer learning pour tester
+                divers modèles
               </strong>{" "}
-              : tuning de la dernière couche du modèle, le classifieur
-              uniquement pour un entraînement ultra rapide et efficace.
+              juste avec un Mac Pro M1 et 3-5 passes sur le jeu de données.
+            </li>
+            <li>
+              🧠{" "}
+              <strong>
+                Puis fixage sur le modèle EfficientNet V2 S et lancement
+                d'hypothèses Optuna pour tester les hyperparamètres les plus prometteurs
+              </strong>{" "}
+              avec une recherche des meilleurs hyperparamètres les plus
+              prometteurs pour une précision aussi élevée que possible. Meilleure précision obtenue : 92%.
             </li>
             <li>
               <strong>
-                💰 Zéro coûts d'API lors de l'inférence étant donné que c'est un
-                modèle personnel.
-              </strong>
+                🎯 Re-finetunings de niche{" "}
+                <span>pour affiner le niveau de confiance du modèle.</span>
+              </strong>{" "}
+              Objectif ne pas confondre les images pré-traitées par logiciel
+              (exemple: les selfies smartphone) vs les images IA. Et affiner le
+              niveau de confiance que donne le modèle pour pas laisser place au
+              doute.
             </li>
             <li>
               <strong>
-                ⚡ Le modèle a une <span>faible latence</span>.
+                ⚡ Le modèle est relativement léger et a été pruné/quantizé{" "}
+                <span>pour optimiser la latence</span>.
               </strong>
+            </li>
+            <li>
+              <strong>💰 Zéro coûts d'API lors de l'inférence</strong> étant
+              donné que c'est un modèle personnel.
               <img
                 src="/static/langsmith.png"
                 alt="LangSmith"
@@ -332,7 +351,7 @@ export default function Index() {
               </CardDescription>
             </li>
           </ul>
-          <p>Et voilà. De bons résultats pour un POC, sans optimisations et avec un modèle très léger pourtant.</p>
+          <p>Et voilà. ☺️</p>
           <CardTitle
             variant="h3"
             className="mt-12 max-w-xl mx-auto text-center"

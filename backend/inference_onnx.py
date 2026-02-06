@@ -12,19 +12,38 @@ from pathlib import Path
 # import torchvision.transforms as transforms
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-ONNX_MODEL_PATH = str(BASE_DIR / "models" / "best_mobilenetV3_nanobanana_pro_int8.onnx")
+ONNX_MODEL_PATH = str(BASE_DIR / "models" / "best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx")
 # PTH_MODEL_PATH = str(BASE_DIR / "models" / "best_model_nanobanana_pro.pth")  # Désactivé en prod
 REAL_THRESHOLD = 0.7
 FAKE_THRESHOLD = 0.7
 
 _session = None
+_expected_image_size = None
+_input_name = None
 # _pytorch_model = None  # Désactivé en prod
 
 def get_onnx_session():
-    global _session
+    global _session, _expected_image_size, _input_name
     if _session is None:
         _session = ort.InferenceSession(ONNX_MODEL_PATH)
+        input_info = _session.get_inputs()[0]
+        _input_name = input_info.name
+        input_shape = input_info.shape
+        if len(input_shape) >= 3 and isinstance(input_shape[-1], int):
+            _expected_image_size = input_shape[-1]
+        else:
+            _expected_image_size = 384
     return _session
+
+def get_expected_image_size():
+    if _expected_image_size is None:
+        get_onnx_session()
+    return _expected_image_size
+
+def get_input_name():
+    if _input_name is None:
+        get_onnx_session()
+    return _input_name
 
 def draw_bboxes_numpy(pil_image, boxes, labels, bbox_colors, bbox_width=6, font_size=54, text_offset=14, stroke_width=0, padding_left=24, padding_bottom=24):
     """Dessine des bboxes sur une image PIL (sans torch)."""
@@ -104,19 +123,21 @@ def softmax_np(x):
 
 def predict_with_gradcam(pil_image):
     session = get_onnx_session()
+    image_size = get_expected_image_size()
 
     w, h = pil_image.size
 
     imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-    img_resized = pil_image.resize((224, 224))
+    img_resized = pil_image.resize((image_size, image_size), Image.Resampling.LANCZOS)
     img_array = np.array(img_resized, dtype=np.float32) / 255.0
     img_array = (img_array - imagenet_mean) / imagenet_std
     img_array = img_array.transpose(2, 0, 1)
     input_tensor = img_array[np.newaxis, ...]
 
-    outputs = session.run(None, {'input': input_tensor})
+    input_name = get_input_name()
+    outputs = session.run(None, {input_name: input_tensor})
     logits = outputs[0][0]
 
     probs = softmax_np(logits)

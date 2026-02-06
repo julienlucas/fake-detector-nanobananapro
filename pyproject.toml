@@ -15,7 +15,6 @@ dependencies = [
     "pillow>=11.0.0",
     # === Training/Build (commenter en prod) ===
     # "dotenv>=0.9.9",          # Doublon avec python-dotenv
-    # "onnxscript>=0.5.7",      # Conversion ONNX
     "torch>=2.2.0", # PyTorch (build uniquement)
     "torchmetrics>=1.8.2", # Métriques entraînement
     "torchvision>=0.15.0", # Transforms/modèles (build uniquement)
@@ -28,4 +27,7 @@ dependencies = [
     # "uvicorn>=0.24",          # Serveur ASGI (Django utilise gunicorn/wsgi)
     # "werkzeug>=1.0.1",        # Utilitaire WSGI non nécessaire
     "dotenv>=0.9.9",
+    "onnx>=1.20.1",
+    "onnxscript>=0.6.0",
+    "onnxconverter-common>=1.14.0",
 ]

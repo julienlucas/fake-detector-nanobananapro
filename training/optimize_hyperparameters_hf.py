@@ -8,9 +8,10 @@ load_dotenv(os.path.join(project_root, ".env"))
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
+import io
 import optuna
 import lightning.pytorch as pl
-from lightning.pytorch.callbacks import EarlyStopping, TQDMProgressBar, Callback
+from lightning.pytorch.callbacks import EarlyStopping, TQDMProgressBar, Callback, StochasticWeightAveraging
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -21,10 +22,15 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, WeightedRandomSampler, Dataset
 from collections import Counter
 from datasets import load_dataset
-from huggingface_hub import HfApi, login, hf_hub_download
-from PIL import Image
+from huggingface_hub import HfApi, hf_hub_download, login
+from PIL import Image, ImageEnhance
 import pandas as pd
 import copy
+import numpy as np
+import onnx
+import onnxruntime as ort
+from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, CalibrationMethod
+from pathlib import Path
 
 # Global pour stocker les meilleurs modèles (top 5)
 BEST_MODELS = []  # Liste de (score, trial_number, model_state_dict, hyperparams)
@@ -36,6 +42,45 @@ HF_OUTPUT_REPO = None
 HF_TOKEN = None
 
 
+# ============================================================
+# AUGMENTATIONS DE TEXTURE POUR DÉTECTER LES ARTEFACTS GAN/DIFFUSION
+# ============================================================
+
+class RandomJPEGCompression:
+    """
+    Simule la compression JPEG des réseaux sociaux.
+    Crucial pour révéler les artefacts des images générées.
+    """
+    def __init__(self, probability=0.3, quality_range=(40, 90)):
+        self.probability = probability
+        self.quality_range = quality_range
+
+    def __call__(self, img):
+        if torch.rand(1).item() < self.probability:
+            output = io.BytesIO()
+            quality = torch.randint(self.quality_range[0], self.quality_range[1], (1,)).item()
+            img.save(output, format='JPEG', quality=quality)
+            output.seek(0)
+            return Image.open(output).convert('RGB')
+        return img
+
+
+class RandomSharpness:
+    """
+    Variation de netteté pour forcer le modèle à détecter les textures.
+    Les IA génératives laissent des traces dans les hautes fréquences.
+    """
+    def __init__(self, factor_range=(0.5, 2.5), probability=0.2):
+        self.factor_range = factor_range
+        self.probability = probability
+
+    def __call__(self, img):
+        if torch.rand(1).item() < self.probability:
+            factor = np.random.uniform(*self.factor_range)
+            return ImageEnhance.Sharpness(img).enhance(factor)
+        return img
+
+
 class HFDatasetWrapper(Dataset):
     """Wrapper pour convertir un dataset Hugging Face en Dataset PyTorch avec transforms"""
     def __init__(self, hf_dataset, transform=None):
@@ -43,7 +88,6 @@ class HFDatasetWrapper(Dataset):
         self.transform = transform
         self.classes = hf_dataset.features['label'].names
         self.class_to_idx = {name: idx for idx, name in enumerate(self.classes)}
-        # Cache des labels pour éviter de recharger
         self._labels = [item['label'] for item in hf_dataset]
 
     def __len__(self):
@@ -66,43 +110,23 @@ class HFDatasetWrapper(Dataset):
         return image, label
 
 
-class ConcatDataset(torch.utils.data.Dataset):
-    """Combine plusieurs datasets"""
-    def __init__(self, *datasets):
-        self.datasets = datasets
-        self.lengths = [len(d) for d in datasets]
-        self.cumulative_lengths = [0]
-        for length in self.lengths:
-            self.cumulative_lengths.append(self.cumulative_lengths[-1] + length)
-
-        self.classes = datasets[0].classes
-        self.class_to_idx = datasets[0].class_to_idx
-
-    def __len__(self):
-        return sum(self.lengths)
-
-    def __getitem__(self, idx):
-        dataset_idx = 0
-        for i, cum_len in enumerate(self.cumulative_lengths[1:], 1):
-            if idx < cum_len:
-                dataset_idx = i - 1
-                break
-        local_idx = idx - self.cumulative_lengths[dataset_idx]
-        return self.datasets[dataset_idx][local_idx]
-
-
 class FakeDetectorDataModule(pl.LightningDataModule):
     """DataModule pour fake/real detection - charge depuis Hugging Face"""
 
-    def __init__(self, hf_repo_id, batch_size=32, aug_strength=0.5, token=None):
+    def __init__(self, hf_repo_id, batch_size=16, aug_strength=0.5, token=None):
         super().__init__()
         self.hf_repo_id = hf_repo_id
         self.batch_size = batch_size
         self.token = token
 
+        # EfficientNet-V2-S : résolution 384x384 (non-négociable)
+        # Augmentations de texture cruciales pour GAN/Diffusion
         self.train_transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.RandomResizedCrop(224, scale=(0.75, 1.0)),
+            transforms.Resize((384, 384)),
+            # Augmentations de texture AVANT le crop (crucial!)
+            RandomJPEGCompression(probability=0.3, quality_range=(40, 90)),
+            RandomSharpness(factor_range=(0.5, 2.5), probability=0.2),
+            transforms.RandomResizedCrop(384, scale=(0.75, 1.0)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomRotation(10),
             transforms.ColorJitter(
@@ -118,8 +142,8 @@ class FakeDetectorDataModule(pl.LightningDataModule):
         ])
 
         self.val_transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.CenterCrop(224),
+            transforms.Resize((384, 384)),
+            transforms.CenterCrop(384),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
@@ -137,13 +161,11 @@ class FakeDetectorDataModule(pl.LightningDataModule):
         self.train_dataset = HFDatasetWrapper(ds['train'], self.train_transform)
         self.val_dataset = HFDatasetWrapper(ds['test'], self.val_transform)
 
-        # Calculer les poids depuis le dataset HF directement
         all_labels = [item['label'] for item in ds['train']]
 
         class_counts = Counter(all_labels)
         total = sum(class_counts.values())
         num_classes = len(class_counts)
-        # Correction: utiliser l'index de classe comme clé, pas enumerate
         self.class_weights = [total / (num_classes * class_counts[i]) for i in range(num_classes)]
 
         print(f"Class weights: {self.class_weights}")
@@ -151,7 +173,6 @@ class FakeDetectorDataModule(pl.LightningDataModule):
         print(f"Val samples: {len(self.val_dataset)}")
 
     def train_dataloader(self):
-        # Utiliser le cache des labels depuis le wrapper
         if hasattr(self.train_dataset, '_labels'):
             all_labels = self.train_dataset._labels
         else:
@@ -163,8 +184,9 @@ class FakeDetectorDataModule(pl.LightningDataModule):
             self.train_dataset,
             batch_size=self.batch_size,
             sampler=sampler,
-            num_workers=0,
-            pin_memory=False
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True
         )
 
     def val_dataloader(self):
@@ -172,242 +194,14 @@ class FakeDetectorDataModule(pl.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=0,
-            pin_memory=False
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True
         )
-
-
-class AttentionBlock(nn.Module):
-    """Bloc d'attention pour améliorer la précision"""
-    def __init__(self, in_features):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Linear(in_features, in_features // 4),
-            nn.ReLU(),
-            nn.Linear(in_features // 4, in_features),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        attn = self.attention(x)
-        return x * attn
-
-
-class OptunaFakeDetector(pl.LightningModule):
-    """Classifier ResNet18 optimisé pour fake/real detection avec architecture améliorée"""
-
-    def __init__(self, trial, num_classes=2, class_weights=None, pretrained_weights_path=None):
-        super().__init__()
-
-        # ============================================================
-        # HYPERPARAMÈTRES À OPTIMISER (8-10 critiques)
-        # ============================================================
-        learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-        weight_decay = trial.suggest_float("weight_decay", 1e-5, 1e-3, log=True)
-        lr_ratio = trial.suggest_float("lr_ratio", 0.01, 0.15, log=True)
-
-        dropout1 = trial.suggest_float("dropout1", 0.15, 0.45)
-        dropout2 = trial.suggest_float("dropout2", 0.1, 0.35)
-
-        scheduler_type = trial.suggest_categorical("scheduler", ["cosine", "onecycle", "cosine_warmup"])
-        focal_gamma = trial.suggest_float("focal_gamma", 0.5, 2.5)
-        mixup_alpha = trial.suggest_float("mixup_alpha", 0.1, 0.35)
-        batch_size_factor = trial.suggest_categorical("batch_size_factor", [1, 2])  # Pour ajuster accumulate_grad
-
-        # ============================================================
-        # HYPERPARAMÈTRES FIXÉS (valeurs safe)
-        # ============================================================
-        hidden_size1 = 512
-        hidden_size2 = 256
-        use_attention = False
-        use_batchnorm = True
-        dropout3 = 0.0
-        label_smoothing = 0.05
-        unfreeze_epoch = 3
-        num_unfreeze_blocks = 2  # layer4 + layer3
-
-        self.save_hyperparameters()
-        self.trial = trial
-        self.unfreeze_epoch = unfreeze_epoch
-        self.num_unfreeze_blocks = num_unfreeze_blocks
-        self.lr_ratio = lr_ratio
-        self.label_smoothing = label_smoothing
-        self.scheduler_type = scheduler_type
-        self.focal_gamma = focal_gamma
-        self.use_attention = use_attention
-        self.mixup_alpha = mixup_alpha
-        self.batch_size_factor = batch_size_factor
-
-        print(f"Trial {trial.number}: Chargement modèle pré-entraîné {pretrained_weights_path}...")
-        model = tv_models.resnet18(weights=None)
-        num_ftrs = model.fc.in_features
-
-        state_dict = torch.load(pretrained_weights_path, map_location='cpu', weights_only=True)
-        if 'state_dict' in state_dict:
-            state_dict = state_dict['state_dict']
-            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
-
-        model_state = model.state_dict()
-        filtered_dict = {k: v for k, v in state_dict.items()
-                        if k in model_state and model_state[k].shape == v.shape}
-        model.load_state_dict(filtered_dict, strict=False)
-        print(f"Trial {trial.number}: Backbone pré-entraîné chargé")
-
-        # Architecture fixée: 512 -> 256 -> 2 avec BatchNorm
-        model.fc = nn.Sequential(
-            nn.Linear(num_ftrs, hidden_size1),
-            nn.BatchNorm1d(hidden_size1),
-            nn.ReLU(),
-            nn.Dropout(dropout1),
-            nn.Linear(hidden_size1, hidden_size2),
-            nn.BatchNorm1d(hidden_size2),
-            nn.ReLU(),
-            nn.Dropout(dropout2),
-            nn.Linear(hidden_size2, num_classes)
-        )
-
-        for param in model.parameters():
-            param.requires_grad = False
-        for param in model.fc.parameters():
-            param.requires_grad = True
-
-        self.model = model
-
-        class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32) if class_weights else None
-        if focal_gamma > 0:
-            self.loss_fn = FocalLoss(alpha=class_weights_tensor, gamma=focal_gamma, label_smoothing=label_smoothing)
-        else:
-            self.loss_fn = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=label_smoothing)
-
-        self.accuracy = Accuracy(task="multiclass", num_classes=num_classes)
-        self.f1 = F1Score(task="multiclass", num_classes=num_classes, average='macro')
-
-        # Métriques par classe (fake=0, real=1 typiquement)
-        self.precision_per_class = Precision(task="multiclass", num_classes=num_classes, average=None)
-        self.recall_per_class = Recall(task="multiclass", num_classes=num_classes, average=None)
-
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.num_classes = num_classes
-
-    def forward(self, x):
-        return self.model(x)
-
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-
-        if self.mixup_alpha > 0 and self.training:
-            lam = torch.distributions.Beta(self.mixup_alpha, self.mixup_alpha).sample().item()
-            batch_size = x.size(0)
-            index = torch.randperm(batch_size, device=x.device)
-            x = lam * x + (1 - lam) * x[index]
-            logits = self(x)
-            loss = lam * self.loss_fn(logits, y) + (1 - lam) * self.loss_fn(logits, y[index])
-        else:
-            logits = self(x)
-            loss = self.loss_fn(logits, y)
-
-        if self.current_epoch == self.unfreeze_epoch and batch_idx == 0:
-            layers_to_unfreeze = ["fc"]
-            if self.num_unfreeze_blocks >= 1:
-                layers_to_unfreeze.append("layer4")
-            if self.num_unfreeze_blocks >= 2:
-                layers_to_unfreeze.append("layer3")
-            if self.num_unfreeze_blocks >= 3:
-                layers_to_unfreeze.append("layer2")
-
-            unfrozen_count = 0
-            for name, param in self.model.named_parameters():
-                for layer_name in layers_to_unfreeze:
-                    if layer_name in name:
-                        param.requires_grad = True
-                        unfrozen_count += 1
-            print(f"Epoch {self.current_epoch}: Dégelé {unfrozen_count} params des layers {layers_to_unfreeze}")
-
-        self.log('train_loss', loss, on_step=False, on_epoch=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        x, y = batch
-        logits = self(x)
-        loss = self.loss_fn(logits, y)
-        acc = self.accuracy(logits, y)
-        f1 = self.f1(logits, y)
-
-        # Métriques par classe
-        precision_per_class = self.precision_per_class(logits, y)
-        recall_per_class = self.recall_per_class(logits, y)
-
-        metrics = {
-            'val_loss': loss,
-            'val_acc': acc,
-            'val_f1': f1,
-        }
-
-        # Ajouter métriques par classe (fake=0, real=1)
-        class_names = ['fake', 'real']
-        for i, name in enumerate(class_names[:self.num_classes]):
-            metrics[f'val_precision_{name}'] = precision_per_class[i]
-            metrics[f'val_recall_{name}'] = recall_per_class[i]
-
-        self.log_dict(metrics, on_step=False, on_epoch=True)
-
-        return {'val_acc': acc, 'val_f1': f1}
-
-    def configure_optimizers(self):
-        backbone_params = [p for n, p in self.model.named_parameters() if 'fc' not in n]
-        head_params = [p for n, p in self.model.named_parameters() if 'fc' in n]
-
-        optimizer = optim.AdamW(
-            [
-                {'params': backbone_params, 'lr': self.learning_rate * self.lr_ratio},
-                {'params': head_params, 'lr': self.learning_rate}
-            ],
-            weight_decay=self.weight_decay,
-            betas=(0.9, 0.999)
-        )
-
-        if self.scheduler_type == "onecycle":
-            scheduler = optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=[self.learning_rate * self.lr_ratio, self.learning_rate],
-                total_steps=self.trainer.estimated_stepping_batches,
-                pct_start=0.2,
-                anneal_strategy='cos',
-                div_factor=10.0,
-                final_div_factor=100.0
-            )
-            interval = "step"
-            monitor = None
-        elif self.scheduler_type == "cosine_warmup":
-            from torch.optim.lr_scheduler import LambdaLR
-            total_steps = self.trainer.estimated_stepping_batches
-            warmup_steps = int(0.1 * total_steps)
-
-            def lr_lambda(step):
-                if step < warmup_steps:
-                    return float(step) / float(max(1, warmup_steps))
-                progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-                return max(0.0, 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159)).item()))
-
-            scheduler = LambdaLR(optimizer, lr_lambda)
-            interval = "step"
-            monitor = None
-        else:
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.trainer.max_epochs, eta_min=1e-7
-            )
-            interval = "epoch"
-            monitor = None
-
-        config = {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": interval}}
-        if monitor:
-            config["lr_scheduler"]["monitor"] = monitor
-        return config
 
 
 class FocalLoss(nn.Module):
-    """Focal Loss pour gérer les cas difficiles"""
+    """Focal Loss pour gérer les cas difficiles - gamma=2.0 standard industrie"""
     def __init__(self, alpha=None, gamma=2.0, label_smoothing=0.0):
         super().__init__()
         self.alpha = alpha
@@ -420,6 +214,224 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-ce_loss)
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
         return focal_loss.mean()
+
+
+class OptunaEfficientNetDetector(pl.LightningModule):
+    """
+    EfficientNet-V2-S optimisé pour fake/real detection avec:
+    - Pooling Mixte (Avg + Max) pour capturer les artefacts
+    - Correction du bug de dégel
+    - SWA compatible
+    """
+
+    def __init__(self, trial, num_classes=2, class_weights=None):
+        super().__init__()
+
+        # ============================================================
+        # HYPERPARAMÈTRES À OPTIMISER (plages ajustées pour 95%)
+        # ============================================================
+        learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
+        weight_decay = trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True)
+        lr_ratio = trial.suggest_float("lr_ratio", 0.01, 0.2, log=True)
+
+        dropout = trial.suggest_float("dropout", 0.3, 0.5)
+
+        scheduler_type = trial.suggest_categorical("scheduler", ["onecycle", "cosine_warmup"])
+
+        # Focal gamma fixé à 2.0 (standard industrie)
+        focal_gamma = 2.0
+
+        # Label smoothing max 0.05 (trop masque les erreurs subtiles)
+        label_smoothing = trial.suggest_float("label_smoothing", 0.0, 0.05)
+
+        # Nombre de blocs à dégeler (1-4 pour garder généralisation)
+        unfreeze_blocks = trial.suggest_int("unfreeze_blocks", 1, 4)
+        unfreeze_epoch = trial.suggest_int("unfreeze_epoch", 2, 4)
+
+        # Accumulation de gradients (4 ou 8 pour stabiliser BatchNorm)
+        accumulate_grad = trial.suggest_categorical("accumulate_grad", [4, 8])
+
+        self.save_hyperparameters()
+        self.trial = trial
+        self.unfreeze_epoch = unfreeze_epoch
+        self.unfreeze_blocks = unfreeze_blocks
+        self.lr_ratio = lr_ratio
+        self.label_smoothing = label_smoothing
+        self.scheduler_type = scheduler_type
+        self.focal_gamma = focal_gamma
+        self.accumulate_grad = accumulate_grad
+
+        # ============================================================
+        # ARCHITECTURE: EfficientNet-V2-S + Pooling Mixte
+        # ============================================================
+        print(f"Trial {trial.number}: Chargement EfficientNet-V2-S (ImageNet weights)...")
+        model = tv_models.efficientnet_v2_s(weights=tv_models.EfficientNet_V2_S_Weights.DEFAULT)
+
+        # Récupérer le nombre de features avant de modifier
+        num_ftrs = model.classifier[1].in_features
+        self.num_ftrs = num_ftrs
+
+        # Enlever le classifier par défaut
+        model.classifier = nn.Identity()
+
+        # Pooling Mixte: capture les indices moyens ET les pics extrêmes
+        self.pool_avg = nn.AdaptiveAvgPool2d(1)
+        self.pool_max = nn.AdaptiveMaxPool2d(1)
+
+        # Nouveau classifier avec features concaténées (Avg + Max)
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(num_ftrs * 2, 512),  # *2 car on concatène Avg et Max
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(512, num_classes)
+        )
+
+        # Geler tout le backbone au début
+        for param in model.features.parameters():
+            param.requires_grad = False
+
+        # Le classifier custom est entraînable dès le départ
+        for param in self.classifier.parameters():
+            param.requires_grad = True
+
+        trainable = sum(p.numel() for p in self.classifier.parameters())
+        total = sum(p.numel() for p in model.parameters()) + trainable
+        print(f"Trial {trial.number}: Parametres entrainables: {trainable:,} / {total:,} (classifier)")
+
+        self.model = model
+
+        # Loss function
+        class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32) if class_weights else None
+        self.loss_fn = FocalLoss(alpha=class_weights_tensor, gamma=focal_gamma, label_smoothing=label_smoothing)
+
+        # Métriques
+        self.accuracy = Accuracy(task="multiclass", num_classes=num_classes)
+        self.f1 = F1Score(task="multiclass", num_classes=num_classes, average='macro')
+        self.precision_per_class = Precision(task="multiclass", num_classes=num_classes, average=None)
+        self.recall_per_class = Recall(task="multiclass", num_classes=num_classes, average=None)
+
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.num_classes = num_classes
+
+    def forward(self, x):
+        # Extraction des features via le backbone
+        features = self.model.features(x)
+
+        # Pooling mixte : moyenne + max
+        avg_pool = self.pool_avg(features)
+        max_pool = self.pool_max(features)
+
+        # Concaténation des deux représentations
+        combined = torch.cat([avg_pool, max_pool], dim=1)
+
+        # Classification
+        return self.classifier(combined)
+
+    def _unfreeze_blocks(self):
+        """Dégèle les N derniers blocs de features"""
+        if self.unfreeze_blocks == 0:
+            return 0
+
+        # EfficientNet-V2-S a 8 éléments dans features (0=stem, 1-7=blocs)
+        total_blocks = len(self.model.features)
+        blocks_to_unfreeze = list(range(total_blocks - self.unfreeze_blocks, total_blocks))
+
+        unfrozen_count = 0
+        for idx in blocks_to_unfreeze:
+            for param in self.model.features[idx].parameters():
+                param.requires_grad = True
+                unfrozen_count += 1
+
+        return unfrozen_count
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        logits = self(x)
+        loss = self.loss_fn(logits, y)
+
+        # Dégeler les blocs à l'époque prévue
+        if self.current_epoch == self.unfreeze_epoch and batch_idx == 0:
+            unfrozen = self._unfreeze_blocks()
+            if unfrozen > 0:
+                print(f"Epoch {self.current_epoch}: Degele {unfrozen} params ({self.unfreeze_blocks} derniers blocs)")
+
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        logits = self(x)
+        loss = self.loss_fn(logits, y)
+
+        acc = self.accuracy(logits, y)
+        f1 = self.f1(logits, y)
+        precision_per_class = self.precision_per_class(logits, y)
+        recall_per_class = self.recall_per_class(logits, y)
+
+        metrics = {
+            'val_loss': loss,
+            'val_acc': acc,
+            'val_f1': f1,
+        }
+
+        class_names = ['fake', 'real']
+        for i, name in enumerate(class_names[:self.num_classes]):
+            metrics[f'val_precision_{name}'] = precision_per_class[i]
+            metrics[f'val_recall_{name}'] = recall_per_class[i]
+
+        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True)
+        return {'val_acc': acc, 'val_f1': f1}
+
+    def configure_optimizers(self):
+        # ============================================================
+        # CORRECTION DU BUG DE DÉGEL: On inclut TOUS les paramètres
+        # même ceux avec requires_grad=False au début
+        # ============================================================
+        backbone_params = []
+        head_params = []
+
+        # Paramètres du backbone (features)
+        for param in self.model.features.parameters():
+            backbone_params.append(param)
+
+        # Paramètres du classifier custom
+        for param in self.classifier.parameters():
+            head_params.append(param)
+
+        # On donne TOUS les paramètres à l'optimiseur
+        optimizer = optim.AdamW([
+            {'params': backbone_params, 'lr': self.learning_rate * self.lr_ratio},
+            {'params': head_params, 'lr': self.learning_rate}
+        ], weight_decay=self.weight_decay)
+
+        # OneCycleLR avec warmup (crucial pour EfficientNet)
+        if self.scheduler_type == "onecycle":
+            scheduler = optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=[self.learning_rate * self.lr_ratio, self.learning_rate],
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.1,  # 10% warmup
+                anneal_strategy='cos',
+                div_factor=10.0,
+                final_div_factor=100.0
+            )
+            interval = "step"
+        else:  # cosine_warmup
+            total_steps = self.trainer.estimated_stepping_batches
+            warmup_steps = int(0.1 * total_steps)
+
+            def lr_lambda(step):
+                if step < warmup_steps:
+                    return float(step) / float(max(1, warmup_steps))
+                progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+                return max(0.0, 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159)).item()))
+
+            scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            interval = "step"
+
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": interval}}
 
 
 class OptunaPruningCallback(pl.Callback):
@@ -440,134 +452,19 @@ class OptunaPruningCallback(pl.Callback):
                 raise optuna.TrialPruned()
 
 
-def get_tta_transforms():
-    """Retourne les transformations TTA (Test Time Augmentation)"""
-    base_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-
-    tta_transforms = [
-        # Original
-        base_transform,
-        # Flip horizontal
-        transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.CenterCrop(224),
-            transforms.RandomHorizontalFlip(p=1.0),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        # Rotation légère +5
-        transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.CenterCrop(224),
-            transforms.RandomRotation(degrees=(5, 5)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        # Rotation légère -5
-        transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.CenterCrop(224),
-            transforms.RandomRotation(degrees=(-5, -5)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        # Scale légèrement différent
-        transforms.Compose([
-            transforms.Resize((270, 270)),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-    ]
-    return tta_transforms
-
-
-def evaluate_with_tta(model, val_loader, device, num_tta=5):
-    """Évalue le modèle avec TTA (Test Time Augmentation)"""
-    model.eval()
-    tta_transforms = get_tta_transforms()[:num_tta]
-
-    all_preds = []
-    all_labels = []
-
-    # Récupérer le dataset original
-    dataset = val_loader.dataset
-    if hasattr(dataset, 'hf_dataset'):
-        hf_dataset = dataset.hf_dataset
-    else:
-        hf_dataset = dataset
-
-    with torch.no_grad():
-        for idx in range(len(hf_dataset)):
-            item = hf_dataset[idx]
-            image = item['image'] if isinstance(item, dict) else item[0]
-            label = item['label'] if isinstance(item, dict) else item[1]
-
-            if not isinstance(image, Image.Image):
-                image = Image.fromarray(image)
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-
-            # Appliquer chaque transformation TTA et moyenner les prédictions
-            tta_logits = []
-            for transform in tta_transforms:
-                img_tensor = transform(image).unsqueeze(0).to(device)
-                logits = model(img_tensor)
-                tta_logits.append(F.softmax(logits, dim=1))
-
-            # Moyenne des probabilités
-            avg_probs = torch.stack(tta_logits).mean(dim=0)
-            pred = avg_probs.argmax(dim=1).item()
-
-            all_preds.append(pred)
-            all_labels.append(label)
-
-    # Calcul des métriques
-    all_preds = torch.tensor(all_preds)
-    all_labels = torch.tensor(all_labels)
-
-    accuracy = (all_preds == all_labels).float().mean().item()
-
-    # Métriques par classe
-    num_classes = 2
-    metrics = {'tta_accuracy': accuracy}
-
-    class_names = ['fake', 'real']
-    for i, name in enumerate(class_names):
-        mask = all_labels == i
-        if mask.sum() > 0:
-            class_acc = (all_preds[mask] == all_labels[mask]).float().mean().item()
-            metrics[f'tta_acc_{name}'] = class_acc
-
-            # Precision et recall par classe
-            tp = ((all_preds == i) & (all_labels == i)).sum().item()
-            fp = ((all_preds == i) & (all_labels != i)).sum().item()
-            fn = ((all_preds != i) & (all_labels == i)).sum().item()
-
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-
-            metrics[f'tta_precision_{name}'] = precision
-            metrics[f'tta_recall_{name}'] = recall
-
-    return metrics
-
-
-def save_model_to_hf(model_state_dict, trial_number, model_name, accuracy, hyperparams, api, repo_id, token):
-    """Sauvegarde le modèle sur HuggingFace"""
+def save_model_to_hf(model, trial_number, accuracy, hyperparams, api, repo_id, token):
+    """Sauvegarde le modèle complet (backbone + classifier) sur HuggingFace"""
     import tempfile
 
-    # Nom du fichier: trial_X_nomdumodel_precision.pth
-    filename = f"trial_{trial_number}_{model_name}_{accuracy:.4f}.pth"
+    filename = f"trial_{trial_number}_efficientnetv2s_{accuracy:.4f}.pth"
 
     with tempfile.NamedTemporaryFile(suffix='.pth', delete=False) as tmp:
         torch.save({
-            'model_state_dict': model_state_dict,
+            'model_state_dict': model.model.state_dict(),
+            'classifier_state_dict': model.classifier.state_dict(),
+            'pool_avg': model.pool_avg.state_dict(),
+            'pool_max': model.pool_max.state_dict(),
+            'num_ftrs': model.num_ftrs,
             'trial_number': trial_number,
             'accuracy': accuracy,
             'hyperparams': hyperparams
@@ -581,128 +478,119 @@ def save_model_to_hf(model_state_dict, trial_number, model_name, accuracy, hyper
                 repo_type="model",
                 token=token
             )
-            print(f"✅ Modèle uploadé: {repo_id}/models/{filename}")
+            print(f"  Modele uploade: {repo_id}/models/{filename}")
         except Exception as e:
-            print(f"⚠️  Erreur upload modèle: {e}")
+            print(f"  Erreur upload modele: {e}")
         finally:
             os.unlink(tmp.name)
 
 
 def update_csv_on_hf(study, api, repo_id, token):
     """Met à jour le CSV des résultats sur HuggingFace"""
-    import tempfile
-
     df = study.trials_dataframe()
-    csv_path = "./optuna_results_fake_detector.csv"
+    csv_path = "./optuna_efficientnet_results.csv"
     df.to_csv(csv_path, index=False)
 
     try:
         api.upload_file(
             path_or_fileobj=csv_path,
-            path_in_repo="optuna_results_fake_detector.csv",
+            path_in_repo="optuna_efficientnet_results.csv",
             repo_id=repo_id,
             repo_type="model",
             token=token
         )
-        print(f"✅ CSV mis à jour sur {repo_id}")
+        print(f"  CSV mis a jour sur {repo_id}")
     except Exception as e:
-        print(f"⚠️  Erreur upload CSV: {e}")
+        print(f"  Erreur upload CSV: {e}")
 
 
-def objective(trial, hf_repo_id, pretrained_path, token=None, study=None):
-    """Fonction objectif pour Optuna"""
+def objective(trial, hf_repo_id, token=None, study=None):
+    """Fonction objectif pour Optuna - EfficientNet-V2-S avec toutes les optimisations"""
     global BEST_MODELS, HF_API, HF_OUTPUT_REPO, HF_TOKEN
 
     pl.seed_everything(42)
 
     try:
-        # Paramètres data FIXÉS pour réduire l'espace de recherche
-        batch_size = 32  # Fixé
-        aug_strength = 0.6  # Fixé
+        batch_size = 16  # Fixé pour éviter OOM sur A10 avec 384x384
+        aug_strength = 0.6
 
-        print(f"[Trial {trial.number}] batch_size={batch_size} (fixé), aug_strength={aug_strength:.2f} (fixé)")
+        print(f"\n{'='*60}")
+        print(f"[Trial {trial.number}] Demarrage")
+        print(f"{'='*60}")
 
-        print(f"[Trial {trial.number}] Chargement des données depuis Hugging Face...")
         dm = FakeDetectorDataModule(hf_repo_id, batch_size=batch_size, aug_strength=aug_strength, token=token)
         dm.setup()
-        print(f"[Trial {trial.number}] Données chargées ({len(dm.train_dataset)} train, {len(dm.val_dataset)} val)")
 
-        print(f"[Trial {trial.number}] Création du modèle...")
-        model = OptunaFakeDetector(
+        model = OptunaEfficientNetDetector(
             trial=trial,
             num_classes=2,
-            class_weights=dm.class_weights,
-            pretrained_weights_path=pretrained_path
+            class_weights=dm.class_weights
         )
-        print(f"[Trial {trial.number}] Modèle créé")
 
+        # Early stopping avec patience=4 (laisser le dégel agir)
         early_stop = EarlyStopping(
             monitor="val_acc",
-            patience=8,
+            patience=4,
             mode="max",
-            min_delta=0.005
+            min_delta=0.003
         )
 
         optuna_callback = OptunaPruningCallback(trial)
 
-        # CUDA uniquement, pas de MPS
+        # SWA pour stabiliser les derniers pourcents (commence à 70% de l'entraînement)
+        swa_callback = StochasticWeightAveraging(
+            swa_lrs=1e-5,
+            swa_epoch_start=0.7
+        )
+
         if torch.cuda.is_available():
             accelerator = "gpu"
-            precision = "16-mixed"
-            device = torch.device("cuda")
-            print(f"[Trial {trial.number}] Utilisation de CUDA")
+            # bf16-mixed si GPU Ampere+ (A10 supporte)
+            if torch.cuda.get_device_capability()[0] >= 8:
+                precision = "bf16-mixed"
+                print(f"[Trial {trial.number}] GPU CUDA Ampere+ - bf16-mixed")
+            else:
+                precision = "16-mixed"
+                print(f"[Trial {trial.number}] GPU CUDA - 16-mixed")
         else:
             accelerator = "cpu"
             precision = "32"
-            device = torch.device("cpu")
-            print(f"[Trial {trial.number}] Utilisation de CPU (CUDA non disponible)")
-
-        print(f"[Trial {trial.number}] Configuration du trainer...")
-
-        train_loader = dm.train_dataloader()
-        val_loader = dm.val_dataloader()
-        print(f"[Trial {trial.number}] Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
-
-        test_batch = next(iter(train_loader))
-        print(f"[Trial {trial.number}] Batch test OK: {test_batch[0].shape}, {test_batch[1].shape}")
-
-        # Récupérer batch_size_factor du modèle pour accumulate_grad_batches
-        accumulate_grad = model.batch_size_factor if hasattr(model, 'batch_size_factor') else 2
+            print(f"[Trial {trial.number}] CPU uniquement")
 
         progress_cb = TQDMProgressBar(refresh_rate=1)
+
         trainer = pl.Trainer(
-            max_epochs=20,  # Réduit de 30 à 20 pour tenir en <10h
+            max_epochs=15,  # 15 epochs pour laisser le temps au SWA
             accelerator=accelerator,
             devices=1,
             precision=precision,
-            callbacks=[early_stop, optuna_callback, progress_cb],
+            callbacks=[early_stop, optuna_callback, progress_cb, swa_callback],
             logger=False,
             enable_progress_bar=True,
             enable_model_summary=False,
             enable_checkpointing=False,
             gradient_clip_val=1.0,
-            accumulate_grad_batches=accumulate_grad,
+            accumulate_grad_batches=model.accumulate_grad,
             num_sanity_val_steps=0,
-            limit_train_batches=1.0,
-            limit_val_batches=1.0,
             log_every_n_steps=20
         )
 
-        print(f"[Trial {trial.number}] Démarrage de l'entraînement...")
+        print(f"[Trial {trial.number}] Hyperparams: lr={trial.params['learning_rate']:.6f}, "
+              f"lr_ratio={trial.params['lr_ratio']:.3f}, dropout={trial.params['dropout']:.2f}, "
+              f"unfreeze_blocks={trial.params['unfreeze_blocks']}, unfreeze_epoch={trial.params['unfreeze_epoch']}")
+
         trainer.fit(model, dm)
-        print(f"[Trial {trial.number}] Entraînement terminé")
 
         val_acc = trainer.callback_metrics.get('val_acc')
         val_f1 = trainer.callback_metrics.get('val_f1')
 
-        # Métriques par classe
         precision_fake = trainer.callback_metrics.get('val_precision_fake')
         recall_fake = trainer.callback_metrics.get('val_recall_fake')
         precision_real = trainer.callback_metrics.get('val_precision_real')
         recall_real = trainer.callback_metrics.get('val_recall_real')
 
         if precision_fake is not None:
-            print(f"[Trial {trial.number}] Métriques par classe:")
+            print(f"[Trial {trial.number}] Metriques par classe:")
             print(f"  FAKE  - Precision: {precision_fake.item():.4f}, Recall: {recall_fake.item():.4f}")
             print(f"  REAL  - Precision: {precision_real.item():.4f}, Recall: {recall_real.item():.4f}")
 
@@ -710,18 +598,14 @@ def objective(trial, hf_repo_id, pretrained_path, token=None, study=None):
             acc = val_acc.item()
             f1 = val_f1.item()
             score = 0.7 * acc + 0.3 * f1
-            print(f"[Trial {trial.number}] Acc: {acc:.4f}, F1: {f1:.4f}, Score combiné: {score:.4f}")
+            print(f"[Trial {trial.number}] Acc: {acc:.4f}, F1: {f1:.4f}, Score: {score:.4f}")
 
-            # Sauvegarder le modèle sur HuggingFace
             if HF_API is not None and HF_OUTPUT_REPO is not None:
-                model_state = copy.deepcopy(model.model.state_dict())
                 hyperparams = trial.params.copy()
 
-                # Upload le modèle
                 save_model_to_hf(
-                    model_state,
+                    model,
                     trial.number,
-                    "resnet18_fakedetector",
                     acc,
                     hyperparams,
                     HF_API,
@@ -729,24 +613,26 @@ def objective(trial, hf_repo_id, pretrained_path, token=None, study=None):
                     HF_TOKEN
                 )
 
-                # Garder les meilleurs modèles en mémoire
+                model_state = {
+                    'model': copy.deepcopy(model.model.state_dict()),
+                    'classifier': copy.deepcopy(model.classifier.state_dict()),
+                    'num_ftrs': model.num_ftrs
+                }
                 BEST_MODELS.append((score, trial.number, model_state, hyperparams))
                 BEST_MODELS.sort(reverse=True, key=lambda x: x[0])
                 BEST_MODELS = BEST_MODELS[:MAX_BEST_MODELS]
 
-                # Mettre à jour le CSV sur HuggingFace
                 if study is not None:
                     update_csv_on_hf(study, HF_API, HF_OUTPUT_REPO, HF_TOKEN)
 
             return score
         elif val_acc is not None:
-            score = val_acc.item()
-            print(f"[Trial {trial.number}] Score final (acc only): {score:.4f}")
-            return score
-        print(f"[Trial {trial.number}] Aucun score trouvé, retour 0.0")
+            return val_acc.item()
+
         return 0.0
+
     except optuna.TrialPruned:
-        print(f"[Trial {trial.number}] Trial pruné (arrêté car non prometteur)")
+        print(f"[Trial {trial.number}] Prune (non prometteur)")
         raise
     except Exception as e:
         print(f"[Trial {trial.number}] ERREUR: {e}")
@@ -755,37 +641,10 @@ def objective(trial, hf_repo_id, pretrained_path, token=None, study=None):
         return 0.0
 
 
-def create_ensemble_model(best_models, num_classes=2):
-    """Crée un modèle ensemble à partir des meilleurs modèles"""
-    class EnsembleModel(nn.Module):
-        def __init__(self, model_states, num_classes):
-            super().__init__()
-            self.models = nn.ModuleList()
-            for state_dict in model_states:
-                model = tv_models.resnet18(weights=None)
-                # Recréer l'architecture de la tête (simplifié - Linear standard)
-                num_ftrs = model.fc.in_features
-                model.fc = nn.Linear(num_ftrs, num_classes)
-                # Charger les poids du backbone uniquement (la tête peut différer)
-                model_state = model.state_dict()
-                filtered = {k: v for k, v in state_dict.items()
-                           if k in model_state and model_state[k].shape == v.shape}
-                model.load_state_dict(filtered, strict=False)
-                self.models.append(model)
-
-        def forward(self, x):
-            outputs = [F.softmax(model(x), dim=1) for model in self.models]
-            return torch.stack(outputs).mean(dim=0)
-
-    model_states = [m[2] for m in best_models]  # (score, trial_num, state_dict, hyperparams)
-    return EnsembleModel(model_states, num_classes)
-
-
-def run_optuna_optimization(n_trials=50, n_jobs=1, hf_repo_id=None, pretrained_path=None, hf_output_repo="julienlucas/fakefinder", token=None):
-    """Lance l'optimisation Optuna et upload le CSV sur Hugging Face"""
+def run_optuna_optimization(n_trials=20, hf_repo_id=None, hf_output_repo="julienlucas/fakefinder", token=None):
+    """Lance l'optimisation Optuna pour EfficientNet-V2-S - 20 trials de 15 epochs"""
     global HF_API, HF_OUTPUT_REPO, HF_TOKEN, BEST_MODELS
 
-    # Initialiser les variables globales pour l'upload continu
     if not token:
         token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_ACCESS_TOKEN")
     if token:
@@ -794,22 +653,23 @@ def run_optuna_optimization(n_trials=50, n_jobs=1, hf_repo_id=None, pretrained_p
         HF_API = HfApi(token=token)
         HF_OUTPUT_REPO = hf_output_repo
         HF_TOKEN = token
-        print(f"✅ Connexion HuggingFace établie - Upload continu activé vers {hf_output_repo}")
+        print(f"Connexion HuggingFace etablie - Upload vers {hf_output_repo}")
     else:
-        print("⚠️  Token HF non trouvé - Upload continu désactivé")
+        print("Token HF non trouve - Upload desactive")
         HF_API = None
 
-    BEST_MODELS = []  # Reset la liste des meilleurs modèles
+    BEST_MODELS = []
 
     sampler = optuna.samplers.TPESampler(
         seed=42,
-        n_startup_trials=7,  # Réduit de 10 à 7 (on a 35 trials, garde 28 pour optimisation)
+        n_startup_trials=5,
         multivariate=True,
     )
 
+    # Pruning adapté pour 15 epochs
     pruner = optuna.pruners.HyperbandPruner(
-        min_resource=4,   # Réduit de 5 à 4 pour 20 epochs
-        max_resource=20,  # Aligné avec max_epochs=20
+        min_resource=4,
+        max_resource=15,
         reduction_factor=3
     )
 
@@ -817,194 +677,499 @@ def run_optuna_optimization(n_trials=50, n_jobs=1, hf_repo_id=None, pretrained_p
         direction='maximize',
         sampler=sampler,
         pruner=pruner,
-        study_name="fake_detector"
+        study_name="efficientnet_v2_s_95pct"
     )
 
-    print(f"\nDémarrage de l'optimisation avec {n_trials} essais...")
-    print("Dataset Hugging Face: julienlucas/midjourney-dalle-sd-nanobananapro-dataset")
-    print("Objectif: Passer de 85-87% à >95%")
-    print("Stratégie: Fine-tuning progressif + Mixup + Focal Loss + Hyperband pruning")
-    print("CUDA uniquement (MPS désactivé)")
-    print("Config optimisée: 9 HPs à optimiser, max_epochs=20, ~9h estimé sur A10")
-    print()
+    print("\n" + "="*60)
+    print("OPTUNA - EfficientNet-V2-S pour 95%+")
+    print("="*60)
+    print(f"Trials: {n_trials}")
+    print(f"Epochs/trial: 15 (patience=4, SWA active)")
+    print(f"Resolution: 384x384")
+    print(f"Batch: 16 + accumulate_grad=[4,8]")
+    print(f"Augmentations: JPEG Compression, Sharpness, ColorJitter, GaussianBlur")
+    print(f"Architecture: Pooling Mixte (Avg + Max)")
+    print(f"Label smoothing: 0.0-0.05 (bas)")
+    print(f"Focal gamma: 2.0 (fixe)")
+    print("="*60 + "\n")
 
-    # Passer le study pour pouvoir mettre à jour le CSV à chaque trial
     study.optimize(
-        lambda trial: objective(trial, hf_repo_id, pretrained_path, token, study=study),
+        lambda trial: objective(trial, hf_repo_id, token, study=study),
         n_trials=n_trials,
-        n_jobs=n_jobs,
+        n_jobs=1,
         show_progress_bar=True
     )
 
-    print("\n" + "="*50)
-    print("OPTIMISATION TERMINÉE")
-    print("="*50)
+    print("\n" + "="*60)
+    print("OPTIMISATION TERMINEE")
+    print("="*60)
 
     best_trial = study.best_trial
-    print(f"\nMeilleure précision: {best_trial.value:.4f}")
-    print("\nMeilleurs hyperparamètres:")
+    print(f"\nMeilleur score: {best_trial.value:.4f}")
+    print("\nMeilleurs hyperparametres:")
     for key, value in best_trial.params.items():
-        print(f"  {key}: {value}")
+        if isinstance(value, float):
+            print(f"  {key}: {value:.6f}")
+        else:
+            print(f"  {key}: {value}")
 
-    # Sauvegarde finale du CSV
     df = study.trials_dataframe()
-    csv_path = "./optuna_results_fake_detector.csv"
+    csv_path = "./optuna_efficientnet_results.csv"
     df.to_csv(csv_path, index=False)
-    print(f"\nRésultats sauvegardés dans {csv_path}")
+    print(f"\nResultats sauvegardes: {csv_path}")
 
-    # Upload final du CSV
     if HF_API is not None:
         update_csv_on_hf(study, HF_API, HF_OUTPUT_REPO, HF_TOKEN)
 
-    # Afficher les top 5 meilleurs modèles
-    print("\n" + "="*50)
-    print(f"TOP {len(BEST_MODELS)} MEILLEURS MODÈLES")
-    print("="*50)
+    print("\n" + "="*60)
+    print(f"TOP {len(BEST_MODELS)} MEILLEURS MODELES")
+    print("="*60)
     for i, (score, trial_num, _, hyperparams) in enumerate(BEST_MODELS):
         print(f"\n#{i+1} - Trial {trial_num}: Score = {score:.4f}")
-        print(f"    LR: {hyperparams.get('learning_rate', 'N/A'):.6f}")
-        print(f"    Scheduler: {hyperparams.get('scheduler', 'N/A')}")
-        print(f"    Dropout1: {hyperparams.get('dropout1', 'N/A'):.3f}")
+        print(f"    lr={hyperparams.get('learning_rate', 0):.6f}, lr_ratio={hyperparams.get('lr_ratio', 0):.3f}")
+        print(f"    dropout={hyperparams.get('dropout', 0):.2f}, unfreeze_blocks={hyperparams.get('unfreeze_blocks', 0)}")
 
     return study, best_trial
 
 
-def run_final_evaluation_with_tta(hf_repo_id, token=None):
-    """Évalue les meilleurs modèles avec TTA et crée un ensemble"""
-    global BEST_MODELS
+# ============================================================
+# PRUNING + QUANTIFICATION INT8
+# ============================================================
 
-    if len(BEST_MODELS) == 0:
-        print("⚠️  Aucun modèle sauvegardé pour l'évaluation finale")
+QUANTIZE_CONFIG = {
+    "hf_repo": "julienlucas/fakefinder",
+    "hf_pth_filename": "models/best_f166.6_acc92.5_efficientnetv2s_fake_detector.pth",
+    "hf_dataset_repo": "julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+    "image_size": 384,
+    "pruning_amount": 0.2,
+    "num_calibration_samples": 500,
+}
+
+
+class EfficientNetV2SForExport(nn.Module):
+    """Architecture identique à train_efficient_v2_s.py (avec BatchNorm dans le head)."""
+    def __init__(self, num_classes=2, dropout=0.34):
+        super().__init__()
+        backbone = tv_models.efficientnet_v2_s(weights=None)
+        num_ftrs = backbone.classifier[1].in_features
+        backbone.classifier = nn.Identity()
+
+        self.backbone = backbone
+        self.pool_avg = nn.AdaptiveAvgPool2d(1)
+        self.pool_max = nn.AdaptiveMaxPool2d(1)
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(num_ftrs * 2, 512),
+            nn.BatchNorm1d(512),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(512, num_classes)
+        )
+
+    def forward(self, x):
+        features = self.backbone.features(x)
+        avg_p = self.pool_avg(features)
+        max_p = self.pool_max(features)
+        x = torch.cat([avg_p, max_p], dim=1)
+        return self.head(x)
+
+
+def load_pth_model(pth_path, num_classes=2):
+    """Charge un modèle .pth (format train_efficient_v2_s.py)."""
+    checkpoint = torch.load(pth_path, map_location="cpu", weights_only=True)
+    dropout = checkpoint.get('config', {}).get('dropout', 0.34) if isinstance(checkpoint, dict) else 0.34
+
+    model = EfficientNetV2SForExport(num_classes=num_classes, dropout=dropout)
+
+    if isinstance(checkpoint, dict):
+        if 'model_state_dict' in checkpoint and 'classifier_state_dict' in checkpoint:
+            model.backbone.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            model.head.load_state_dict(checkpoint['classifier_state_dict'], strict=False)
+            if 'pool_avg' in checkpoint:
+                model.pool_avg.load_state_dict(checkpoint['pool_avg'])
+            if 'pool_max' in checkpoint:
+                model.pool_max.load_state_dict(checkpoint['pool_max'])
+        else:
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            if isinstance(state_dict, dict):
+                backbone_dict = {k.replace('backbone.', ''): v for k, v in state_dict.items() if k.startswith('backbone.')}
+                head_dict = {k.replace('head.', ''): v for k, v in state_dict.items() if k.startswith('head.')}
+                if backbone_dict:
+                    model.backbone.load_state_dict(backbone_dict, strict=False)
+                if head_dict:
+                    model.head.load_state_dict(head_dict, strict=False)
+            else:
+                model.load_state_dict(state_dict, strict=False)
+    else:
+        model.load_state_dict(checkpoint, strict=False)
+
+    model.eval()
+    return model
+
+
+def prune_backbone_conv2d(model, amount=0.2):
+    """Prune uniquement les Conv2d du backbone (pas le head)."""
+    import torch.nn.utils.prune as prune
+
+    parameters_to_prune = []
+    for name, module in model.backbone.named_modules():
+        if isinstance(module, nn.Conv2d):
+            parameters_to_prune.append((module, 'weight'))
+
+    print(f"  Pruning {len(parameters_to_prune)} couches Conv2d à {amount*100:.0f}%...")
+    prune.global_unstructured(
+        parameters_to_prune,
+        pruning_method=prune.L1Unstructured,
+        amount=amount,
+    )
+    for name, module in model.backbone.named_modules():
+        if isinstance(module, nn.Conv2d):
+            prune.remove(module, 'weight')
+
+    return model
+
+
+def export_to_onnx(model, onnx_path, image_size=384):
+    """Exporte le modèle PyTorch vers ONNX FP32."""
+    dummy_input = torch.randn(1, 3, image_size, image_size)
+
+    # Déterminer la taille des features pour le fallback pooling fixe
+    with torch.no_grad():
+        features = model.backbone.features(dummy_input)
+        _, _, h, w = features.shape
+
+    dynamic_axes = {'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+
+    try:
+        torch.onnx.export(
+            model, dummy_input, onnx_path,
+            export_params=True, opset_version=18, do_constant_folding=True,
+            input_names=["input"], output_names=["output"],
+            dynamic_axes=dynamic_axes, verbose=False
+        )
+        print(f"  Export ONNX FP32 (opset 18, pooling adaptatif): {onnx_path}")
         return
+    except Exception as e:
+        print(f"  Opset 18 échoué: {e}")
 
-    print("\n" + "="*60)
-    print("ÉVALUATION FINALE AVEC TTA (Test Time Augmentation)")
-    print("="*60)
+    # Fallback: pooling fixe
+    print(f"  Fallback: pooling fixe kernel_size={h}")
+    model.pool_avg = nn.AvgPool2d(kernel_size=h, stride=h)
+    model.pool_max = nn.MaxPool2d(kernel_size=h, stride=h)
 
-    # Charger les données de validation
-    print("\nChargement des données de validation...")
-    dm = FakeDetectorDataModule(hf_repo_id, batch_size=32, aug_strength=0.5, token=token)
-    dm.setup()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-
-    # Évaluer chaque modèle avec TTA
-    print("\n--- Évaluation individuelle avec TTA ---")
-    for i, (score, trial_num, state_dict, hyperparams) in enumerate(BEST_MODELS):
-        print(f"\nModèle #{i+1} (Trial {trial_num}, Score original: {score:.4f})")
-
-        # Reconstruire le modèle
-        model = tv_models.resnet18(weights=None)
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, 2)
-
-        # Charger les poids compatibles
-        model_state = model.state_dict()
-        filtered = {k: v for k, v in state_dict.items()
-                   if k in model_state and model_state[k].shape == v.shape}
-        model.load_state_dict(filtered, strict=False)
-        model = model.to(device)
-        model.eval()
-
-        # TTA evaluation
-        tta_metrics = evaluate_with_tta(model, dm.val_dataloader(), device, num_tta=5)
-        print(f"  TTA Accuracy: {tta_metrics['tta_accuracy']:.4f}")
-        print(f"  FAKE  - Precision: {tta_metrics.get('tta_precision_fake', 0):.4f}, Recall: {tta_metrics.get('tta_recall_fake', 0):.4f}")
-        print(f"  REAL  - Precision: {tta_metrics.get('tta_precision_real', 0):.4f}, Recall: {tta_metrics.get('tta_recall_real', 0):.4f}")
-
-    # Évaluer l'ensemble
-    if len(BEST_MODELS) >= 2:
-        print("\n--- Évaluation de l'Ensemble (Top 5 modèles) ---")
-        ensemble = create_ensemble_model(BEST_MODELS, num_classes=2)
-        ensemble = ensemble.to(device)
-        ensemble.eval()
-
-        tta_metrics = evaluate_with_tta(ensemble, dm.val_dataloader(), device, num_tta=5)
-        print(f"  Ensemble TTA Accuracy: {tta_metrics['tta_accuracy']:.4f}")
-        print(f"  FAKE  - Precision: {tta_metrics.get('tta_precision_fake', 0):.4f}, Recall: {tta_metrics.get('tta_recall_fake', 0):.4f}")
-        print(f"  REAL  - Precision: {tta_metrics.get('tta_precision_real', 0):.4f}, Recall: {tta_metrics.get('tta_recall_real', 0):.4f}")
-
-        # Sauvegarder l'ensemble sur HuggingFace
-        if HF_API is not None:
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix='.pth', delete=False) as tmp:
-                torch.save({
-                    'ensemble_state_dicts': [m[2] for m in BEST_MODELS],
-                    'ensemble_trial_numbers': [m[1] for m in BEST_MODELS],
-                    'ensemble_scores': [m[0] for m in BEST_MODELS],
-                    'tta_accuracy': tta_metrics['tta_accuracy']
-                }, tmp.name)
-
-                try:
-                    HF_API.upload_file(
-                        path_or_fileobj=tmp.name,
-                        path_in_repo=f"models/ensemble_top{len(BEST_MODELS)}_{tta_metrics['tta_accuracy']:.4f}.pth",
-                        repo_id=HF_OUTPUT_REPO,
-                        repo_type="model",
-                        token=HF_TOKEN
-                    )
-                    print(f"✅ Ensemble uploadé sur HuggingFace")
-                except Exception as e:
-                    print(f"⚠️  Erreur upload ensemble: {e}")
-                finally:
-                    os.unlink(tmp.name)
+    torch.onnx.export(
+        model, dummy_input, onnx_path,
+        export_params=True, opset_version=18, do_constant_folding=True,
+        input_names=["input"], output_names=["output"],
+        dynamic_axes=dynamic_axes, verbose=False
+    )
+    print(f"  Export ONNX FP32 (pooling fixe {h}x{h}): {onnx_path}")
 
 
-if __name__ == "__main__":
-    hf_output_repo = "julienlucas/fakefinder"
-    token = os.getenv("HF_ACCESS_TOKEN")
+class LazyCalibrationReader(CalibrationDataReader):
+    """Charge les images à la volée (lazy) avec échantillonnage balancé (50% fake / 50% real)."""
+    def __init__(self, hf_dataset_repo, num_samples=500, image_size=384, token=None):
+        self.val_transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.CenterCrop(image_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
 
-    print(f"📥 Téléchargement du modèle depuis {hf_output_repo}...")
-    pretrained_path = hf_hub_download(
-        repo_id="julienlucas/fakefinder",
-        filename="best_76_resnet18_fake_detector.pth",
+        print(f"  Préparation de {num_samples} indices de calibration (lazy, balancé)...", flush=True)
+        ds = load_dataset(hf_dataset_repo, token=token)
+        self.test_ds = ds['test']
+
+        # Échantillonnage balancé : autant de fake que de real
+        labels = [item['label'] for item in self.test_ds]
+        indices_by_class = {}
+        for idx, label in enumerate(labels):
+            indices_by_class.setdefault(label, []).append(idx)
+
+        samples_per_class = num_samples // len(indices_by_class)
+        balanced_indices = []
+        for cls, cls_indices in indices_by_class.items():
+            chosen = np.random.permutation(cls_indices)[:samples_per_class]
+            balanced_indices.extend(chosen.tolist())
+            print(f"    Classe {cls}: {len(chosen)} images", flush=True)
+
+        np.random.shuffle(balanced_indices)
+        self.indices = balanced_indices
+        self.num_samples = len(balanced_indices)
+        self.index = 0
+        print(f"  {self.num_samples} indices prêts (chargement à la volée).", flush=True)
+
+    def get_next(self):
+        if self.index >= self.num_samples:
+            return None
+
+        idx = self.indices[self.index]
+        item = self.test_ds[int(idx)]
+        image = item['image']
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(image)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        tensor = self.val_transform(image).unsqueeze(0).numpy().astype(np.float32)
+        self.index += 1
+        if self.index % 50 == 0 or self.index == 1:
+            print(f"  Calibration: {self.index}/{self.num_samples}", flush=True)
+        return {"input": tensor}
+
+
+def preprocess_onnx_model(input_path, output_path):
+    """Pré-traite le modèle ONNX (shape inference + optimisation) avant quantification."""
+    try:
+        from onnxruntime.quantization import preprocess_model
+        print(f"  Pré-traitement ONNX (shape inference + optimisation)...")
+        preprocess_model(input_path, output_path)
+        print(f"  Modèle pré-traité: {output_path}")
+        return output_path
+    except (ImportError, Exception) as e:
+        print(f"  preprocess_model indisponible ({e}), fallback shape inference...")
+        try:
+            onnx_model = onnx.load(input_path)
+            onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
+            onnx.save(onnx_model, output_path)
+            print(f"  Shape inference OK: {output_path}")
+            return output_path
+        except Exception as e2:
+            print(f"  Shape inference échouée ({e2}), utilisation du modèle original")
+            return input_path
+
+
+def get_nodes_to_exclude(onnx_path):
+    """Identifie les nœuds sensibles à exclure de la quantification INT8.
+
+    Exclut:
+    - Les premiers Conv (stem) : très sensibles, portent l'info basse fréquence
+    - Toutes les BatchNorm : la quantification détruit leurs statistiques
+    - Les 2 derniers Gemm/MatMul (Linear du head) : frontière de décision fake/real
+    """
+    onnx_model = onnx.load(onnx_path)
+    nodes_to_exclude = []
+    conv_nodes = []
+    gemm_nodes = []
+
+    for node in onnx_model.graph.node:
+        if node.op_type == 'Conv':
+            conv_nodes.append(node.name)
+        elif node.op_type == 'BatchNormalization':
+            nodes_to_exclude.append(node.name)
+        elif node.op_type in ('Gemm', 'MatMul'):
+            gemm_nodes.append(node.name)
+
+    # Exclure les 3 premiers Conv (stem + début du premier bloc)
+    # Le stem capture les features bas niveau (bords, textures) très sensibles à la quantification
+    num_stem_convs = min(3, len(conv_nodes))
+    nodes_to_exclude.extend(conv_nodes[:num_stem_convs])
+    print(f"    Stem: {num_stem_convs} premiers Conv exclus")
+
+    # Les 2 derniers Gemm = les 2 Linear du head (frontière de décision)
+    if len(gemm_nodes) >= 2:
+        nodes_to_exclude.extend(gemm_nodes[-2:])
+    elif gemm_nodes:
+        nodes_to_exclude.extend(gemm_nodes)
+
+    print(f"    Total nœuds exclus: {len(nodes_to_exclude)} (stem + BN + head)")
+    return nodes_to_exclude
+
+
+def evaluate_onnx_model(onnx_path, hf_dataset_repo, image_size=384, token=None):
+    """Évalue l'accuracy d'un modèle ONNX sur le dataset de test."""
+    print(f"  Chargement du dataset de test...", flush=True)
+    ds = load_dataset(hf_dataset_repo, token=token)
+    test_ds = ds['test']
+
+    val_transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.CenterCrop(image_size),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
+    session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+    input_name = session.get_inputs()[0].name
+
+    correct = 0
+    total = 0
+    for i, item in enumerate(test_ds):
+        image = item['image']
+        label = item['label']
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(image)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        tensor = val_transform(image).unsqueeze(0).numpy().astype(np.float32)
+        output = session.run(None, {input_name: tensor})[0]
+        pred = np.argmax(output, axis=1)[0]
+
+        if pred == label:
+            correct += 1
+        total += 1
+
+        if (i + 1) % 200 == 0:
+            print(f"    Évalué: {i + 1}/{len(test_ds)} (acc: {correct/total*100:.1f}%)", flush=True)
+
+    accuracy = correct / total * 100
+    del ds, test_ds
+    return accuracy
+
+
+def prune_and_quantize(token=None):
+    """Pipeline complet: .pth → prune 20% → ONNX FP32 → preprocess → quantize INT8 → eval → upload.
+
+    Optimisations pour conserver ~92% d'accuracy en INT8:
+    - Calibration Percentile (500 images balancées) : plus robuste que Entropy
+    - Preprocessing ONNX (shape inference) avant quantification
+    - Exclusion des couches sensibles : stem (3 premiers Conv) + BatchNorm + head (2 Linear)
+    - Quantification asymétrique (CalibTensorRangeSymmetric=False)
+    - Lissage par moyenne mobile (CalibMovingAverage=True)
+    """
+    cfg = QUANTIZE_CONFIG
+    token = token or os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_ACCESS_TOKEN")
+
+    print("\n" + "=" * 60)
+    print("PRUNING 20% + QUANTIFICATION INT8 (cible: 92% acc)")
+    print("=" * 60)
+    print(f"  Calibration: {cfg['num_calibration_samples']} images (balancé)")
+    print(f"  Méthode: Percentile (asymétrique, moving average)")
+    print(f"  Exclusions: stem + BatchNorm + head")
+
+    # 1. Télécharger le .pth depuis HuggingFace
+    print("\n[1/7] Téléchargement du modèle depuis HuggingFace...")
+    pth_path = hf_hub_download(
+        repo_id=cfg["hf_repo"],
+        filename=cfg["hf_pth_filename"],
         repo_type="model",
         token=token
     )
-    print(f"✅ Modèle téléchargé: {pretrained_path}")
+    print(f"  Modèle: {pth_path}")
 
-    study, best_trial = run_optuna_optimization(
-        n_trials=35,  # Réduit de 50 à 35 pour tenir en <10h
-        n_jobs=1,
-        hf_repo_id="julienlucas/fakefinder",
-        pretrained_path=pretrained_path,
-        hf_output_repo="julienlucas/fakefinder",
+    # 2. Charger + pruner
+    print("\n[2/7] Chargement et pruning 20%...")
+    model = load_pth_model(pth_path)
+    model = prune_backbone_conv2d(model, amount=cfg["pruning_amount"])
+
+    # 3. Export ONNX FP32
+    os.makedirs("../models", exist_ok=True)
+    fp32_path = "../models/best_efficientnetv2s_pruned_fp32.onnx"
+    preprocessed_path = "../models/best_efficientnetv2s_pruned_fp32_preprocessed.onnx"
+    int8_path = "../models/best_efficientnetv2s_pruned_int8.onnx"
+
+    print("\n[3/7] Export ONNX FP32...")
+    export_to_onnx(model, fp32_path, image_size=cfg["image_size"])
+    del model
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    # 4. Preprocessing ONNX (shape inference + optimisation)
+    print("\n[4/7] Preprocessing ONNX...")
+    quantize_input = preprocess_onnx_model(fp32_path, preprocessed_path)
+
+    # 5. Quantification INT8
+    print("\n[5/7] Quantification INT8 (Percentile, 500 samples balancés)...")
+    nodes_to_exclude = get_nodes_to_exclude(quantize_input)
+
+    calibration_reader = LazyCalibrationReader(
+        cfg["hf_dataset_repo"],
+        num_samples=cfg["num_calibration_samples"],
+        image_size=cfg["image_size"],
         token=token
     )
 
-    print("\n" + "="*60)
-    print("MEILLEURS HYPERPARAMÈTRES TROUVÉS")
-    print("="*60)
-    print(f"\nPrécision atteinte: {best_trial.value:.4f} ({best_trial.value*100:.2f}%)")
-    print("\nHyperparamètres optimaux:")
-    print("-"*40)
+    quantize_static(
+        model_input=quantize_input,
+        model_output=int8_path,
+        calibration_data_reader=calibration_reader,
+        quant_format=ort.quantization.QuantFormat.QDQ,
+        weight_type=QuantType.QInt8,
+        activation_type=QuantType.QUInt8,
+        per_channel=True,
+        calibrate_method=CalibrationMethod.Percentile,
+        nodes_to_exclude=nodes_to_exclude,
+        extra_options={
+            'CalibTensorRangeSymmetric': False,
+            'CalibMovingAverage': True,
+        },
+    )
+    print(f"  Modèle INT8: {int8_path}")
 
-    categories = {
-        "Optimisation": ["learning_rate", "weight_decay", "lr_ratio", "scheduler"],
-        "Régularisation": ["dropout1", "dropout2", "focal_gamma", "mixup_alpha"],
-        "Training": ["batch_size_factor"]
-    }
-
-    print("\n[Paramètres FIXÉS]")
-    print("  hidden_size1 = 512, hidden_size2 = 256")
-    print("  use_batchnorm = True, use_attention = False")
-    print("  label_smoothing = 0.05, dropout3 = 0.0")
-    print("  unfreeze_epoch = 3, num_unfreeze_blocks = 2")
-    print("  batch_size = 32, aug_strength = 0.6")
-
-    for cat_name, params in categories.items():
-        print(f"\n{cat_name}:")
-        for key in params:
-            if key in best_trial.params:
-                value = best_trial.params[key]
-                if isinstance(value, float):
-                    print(f"  {key} = {value:.6f}")
-                else:
-                    print(f"  {key} = {value}")
-
-    # Évaluation finale avec TTA et Ensemble
-    run_final_evaluation_with_tta(
-        hf_repo_id="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+    # 6. Évaluation de l'accuracy INT8
+    print("\n[6/7] Évaluation accuracy INT8 sur le dataset de test...")
+    accuracy = evaluate_onnx_model(
+        int8_path,
+        cfg["hf_dataset_repo"],
+        image_size=cfg["image_size"],
         token=token
     )
+    print(f"  Accuracy INT8: {accuracy:.2f}%")
+    if accuracy >= 92.0:
+        print(f"  OBJECTIF ATTEINT (>= 92%)")
+    else:
+        print(f"  ATTENTION: accuracy sous l'objectif de 92% ({accuracy:.2f}%)")
+
+    # 7. Upload sur HuggingFace
+    print("\n[7/7] Upload sur HuggingFace...")
+    fp32_size = Path(fp32_path).stat().st_size / (1024 * 1024)
+    fp32_data = Path(fp32_path + ".data")
+    if fp32_data.exists():
+        fp32_size += fp32_data.stat().st_size / (1024 * 1024)
+    int8_size = Path(int8_path).stat().st_size / (1024 * 1024)
+
+    print(f"  Taille FP32: {fp32_size:.1f} MB")
+    print(f"  Taille INT8: {int8_size:.1f} MB (réduction {((fp32_size - int8_size) / fp32_size * 100):.1f}%)")
+    print(f"  Accuracy: {accuracy:.2f}%")
+
+    if token:
+        api = HfApi(token=token)
+        try:
+            api.upload_file(
+                path_or_fileobj=int8_path,
+                path_in_repo="models/best_efficientnetv2s_pruned_int8.onnx",
+                repo_id=cfg["hf_repo"],
+                repo_type="model",
+                token=token
+            )
+            print(f"  Uploadé: {cfg['hf_repo']}/models/best_efficientnetv2s_pruned_int8.onnx")
+        except Exception as e:
+            print(f"  Erreur upload: {e}")
+
+    # Nettoyage fichiers temporaires
+    for f in [Path(fp32_path), Path(fp32_path + ".data"), Path(preprocessed_path)]:
+        if f.exists():
+            f.unlink()
+
+    print("\n" + "=" * 60)
+    print(f"TERMINÉ - Accuracy INT8: {accuracy:.2f}%")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    import sys
+
+    hf_output_repo = "julienlucas/fakefinder"
+    token = os.getenv("HF_ACCESS_TOKEN")
+
+    # Si argument "quantize" → lance seulement le pruning + quantification
+    if len(sys.argv) > 1 and sys.argv[1] == "quantize":
+        prune_and_quantize(token=token)
+    else:
+        study, best_trial = run_optuna_optimization(
+            n_trials=20,
+            hf_repo_id="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+            hf_output_repo=hf_output_repo,
+            token=token
+        )
+
+        print("\n" + "=" * 60)
+        print("CONFIG OPTIMALE POUR ENTRAINEMENT FINAL")
+        print("=" * 60)
+        print("\nCopie ces valeurs dans ton script d'entrainement final:")
+        print("-" * 40)
+        for key, value in best_trial.params.items():
+            if isinstance(value, float):
+                print(f'"{key}": {value:.6f},')
+            else:
+                print(f'"{key}": {value},')
