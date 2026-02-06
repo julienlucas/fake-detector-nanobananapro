@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 import io
 import optuna
 import lightning.pytorch as pl
-from lightning.pytorch.callbacks import EarlyStopping, TQDMProgressBar, Callback, StochasticWeightAveraging
+from lightning.pytorch.callbacks import EarlyStopping, TQDMProgressBar, StochasticWeightAveraging
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -24,13 +24,11 @@ from collections import Counter
 from datasets import load_dataset
 from huggingface_hub import HfApi, hf_hub_download, login
 from PIL import Image, ImageEnhance
-import pandas as pd
 import copy
 import numpy as np
 import onnx
 import onnxruntime as ort
-from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, CalibrationMethod
-from pathlib import Path
+from onnxruntime.quantization import CalibrationDataReader
 
 # Global pour stocker les meilleurs modèles (top 5)
 BEST_MODELS = []  # Liste de (score, trial_number, model_state_dict, hyperparams)
@@ -1018,158 +1016,26 @@ def evaluate_onnx_model(onnx_path, hf_dataset_repo, image_size=384, token=None):
     return accuracy
 
 
-def prune_and_quantize(token=None):
-    """Pipeline complet: .pth → prune 20% → ONNX FP32 → preprocess → quantize INT8 → eval → upload.
-
-    Optimisations pour conserver ~92% d'accuracy en INT8:
-    - Calibration Percentile (500 images balancées) : plus robuste que Entropy
-    - Preprocessing ONNX (shape inference) avant quantification
-    - Exclusion des couches sensibles : stem (3 premiers Conv) + BatchNorm + head (2 Linear)
-    - Quantification asymétrique (CalibTensorRangeSymmetric=False)
-    - Lissage par moyenne mobile (CalibMovingAverage=True)
-    """
-    cfg = QUANTIZE_CONFIG
-    token = token or os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_ACCESS_TOKEN")
-
-    print("\n" + "=" * 60)
-    print("PRUNING 20% + QUANTIFICATION INT8 (cible: 92% acc)")
-    print("=" * 60)
-    print(f"  Calibration: {cfg['num_calibration_samples']} images (balancé)")
-    print(f"  Méthode: Percentile (asymétrique, moving average)")
-    print(f"  Exclusions: stem + BatchNorm + head")
-
-    # 1. Télécharger le .pth depuis HuggingFace
-    print("\n[1/7] Téléchargement du modèle depuis HuggingFace...")
-    pth_path = hf_hub_download(
-        repo_id=cfg["hf_repo"],
-        filename=cfg["hf_pth_filename"],
-        repo_type="model",
-        token=token
-    )
-    print(f"  Modèle: {pth_path}")
-
-    # 2. Charger + pruner
-    print("\n[2/7] Chargement et pruning 20%...")
-    model = load_pth_model(pth_path)
-    model = prune_backbone_conv2d(model, amount=cfg["pruning_amount"])
-
-    # 3. Export ONNX FP32
-    os.makedirs("../models", exist_ok=True)
-    fp32_path = "../models/best_efficientnetv2s_pruned_fp32.onnx"
-    preprocessed_path = "../models/best_efficientnetv2s_pruned_fp32_preprocessed.onnx"
-    int8_path = "../models/best_efficientnetv2s_pruned_int8.onnx"
-
-    print("\n[3/7] Export ONNX FP32...")
-    export_to_onnx(model, fp32_path, image_size=cfg["image_size"])
-    del model
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-    # 4. Preprocessing ONNX (shape inference + optimisation)
-    print("\n[4/7] Preprocessing ONNX...")
-    quantize_input = preprocess_onnx_model(fp32_path, preprocessed_path)
-
-    # 5. Quantification INT8
-    print("\n[5/7] Quantification INT8 (Percentile, 500 samples balancés)...")
-    nodes_to_exclude = get_nodes_to_exclude(quantize_input)
-
-    calibration_reader = LazyCalibrationReader(
-        cfg["hf_dataset_repo"],
-        num_samples=cfg["num_calibration_samples"],
-        image_size=cfg["image_size"],
-        token=token
-    )
-
-    quantize_static(
-        model_input=quantize_input,
-        model_output=int8_path,
-        calibration_data_reader=calibration_reader,
-        quant_format=ort.quantization.QuantFormat.QDQ,
-        weight_type=QuantType.QInt8,
-        activation_type=QuantType.QUInt8,
-        per_channel=True,
-        calibrate_method=CalibrationMethod.Percentile,
-        nodes_to_exclude=nodes_to_exclude,
-        extra_options={
-            'CalibTensorRangeSymmetric': False,
-            'CalibMovingAverage': True,
-        },
-    )
-    print(f"  Modèle INT8: {int8_path}")
-
-    # 6. Évaluation de l'accuracy INT8
-    print("\n[6/7] Évaluation accuracy INT8 sur le dataset de test...")
-    accuracy = evaluate_onnx_model(
-        int8_path,
-        cfg["hf_dataset_repo"],
-        image_size=cfg["image_size"],
-        token=token
-    )
-    print(f"  Accuracy INT8: {accuracy:.2f}%")
-    if accuracy >= 92.0:
-        print(f"  OBJECTIF ATTEINT (>= 92%)")
-    else:
-        print(f"  ATTENTION: accuracy sous l'objectif de 92% ({accuracy:.2f}%)")
-
-    # 7. Upload sur HuggingFace
-    print("\n[7/7] Upload sur HuggingFace...")
-    fp32_size = Path(fp32_path).stat().st_size / (1024 * 1024)
-    fp32_data = Path(fp32_path + ".data")
-    if fp32_data.exists():
-        fp32_size += fp32_data.stat().st_size / (1024 * 1024)
-    int8_size = Path(int8_path).stat().st_size / (1024 * 1024)
-
-    print(f"  Taille FP32: {fp32_size:.1f} MB")
-    print(f"  Taille INT8: {int8_size:.1f} MB (réduction {((fp32_size - int8_size) / fp32_size * 100):.1f}%)")
-    print(f"  Accuracy: {accuracy:.2f}%")
-
-    if token:
-        api = HfApi(token=token)
-        try:
-            api.upload_file(
-                path_or_fileobj=int8_path,
-                path_in_repo="models/best_efficientnetv2s_pruned_int8.onnx",
-                repo_id=cfg["hf_repo"],
-                repo_type="model",
-                token=token
-            )
-            print(f"  Uploadé: {cfg['hf_repo']}/models/best_efficientnetv2s_pruned_int8.onnx")
-        except Exception as e:
-            print(f"  Erreur upload: {e}")
-
-    # Nettoyage fichiers temporaires
-    for f in [Path(fp32_path), Path(fp32_path + ".data"), Path(preprocessed_path)]:
-        if f.exists():
-            f.unlink()
-
-    print("\n" + "=" * 60)
-    print(f"TERMINÉ - Accuracy INT8: {accuracy:.2f}%")
-    print("=" * 60)
-
-
 if __name__ == "__main__":
     import sys
 
     hf_output_repo = "julienlucas/fakefinder"
     token = os.getenv("HF_ACCESS_TOKEN")
 
-    # Si argument "quantize" → lance seulement le pruning + quantification
-    if len(sys.argv) > 1 and sys.argv[1] == "quantize":
-        prune_and_quantize(token=token)
-    else:
-        study, best_trial = run_optuna_optimization(
-            n_trials=20,
-            hf_repo_id="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
-            hf_output_repo=hf_output_repo,
-            token=token
-        )
+    study, best_trial = run_optuna_optimization(
+        n_trials=20,
+        hf_repo_id="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+        hf_output_repo=hf_output_repo,
+        token=token
+    )
 
-        print("\n" + "=" * 60)
-        print("CONFIG OPTIMALE POUR ENTRAINEMENT FINAL")
-        print("=" * 60)
-        print("\nCopie ces valeurs dans ton script d'entrainement final:")
-        print("-" * 40)
-        for key, value in best_trial.params.items():
-            if isinstance(value, float):
-                print(f'"{key}": {value:.6f},')
-            else:
-                print(f'"{key}": {value},')
+    print("\n" + "=" * 60)
+    print("CONFIG OPTIMALE POUR ENTRAINEMENT FINAL")
+    print("=" * 60)
+    print("\nCopie ces valeurs dans ton script d'entrainement final:")
+    print("-" * 40)
+    for key, value in best_trial.params.items():
+        if isinstance(value, float):
+            print(f'"{key}": {value:.6f},')
+        else:
+            print(f'"{key}": {value},')

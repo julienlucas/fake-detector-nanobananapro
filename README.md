@@ -1,6 +1,13 @@
-# FakeFinder - Détecteur d'Images IA vs Réelles
+# Fakefinder images IA vs Real NanoBananaPro et autres
 
-Application web permettant de détecter si une image a été générée par une Intelligence Artificielle (Midjourney, DALL-E, Stable Diffusion) ou si elle est réelle.
+Application web permettant de détecter si une image a été générée par une Intelligence Artificielle (Midjourney, DALL-E, Stable Diffusion et NanoBananaPro) ou si elle est réelle.
+
+
+*   **Précision globale :** 90% (score F1 90%, testé sur 2000 images)
+*   **Précision selfies smartphone :** 80%
+
+![Fakefinder](./static/header.png)
+
 
 ## 🏗 Architecture
 
@@ -19,15 +26,11 @@ Le backend gère l'analyse des images via le modèle ONNX optimisé.
 # Aller dans le dossier backend (racine du projet pour Django)
 cd backend
 
-# Créer et activer un environnement virtuel (recommandé)
-python -m venv .venv
-source .venv/bin/activate
-
 # Installer les dépendances
-pip install -r requirements.txt
+uv sync
 
 # Lancer le serveur de développement
-python manage.py runserver
+uv run manage.py runserver
 ```
 
 L'API sera accessible sur `http://localhost:8000`.
@@ -70,11 +73,27 @@ Les scripts dans le répertoire `training/` permettent de reproduire le modèle 
     *   **Augmentations agressives** : Compression JPEG, Flou Gaussien, Bruit, etc., pour forcer le modèle à apprendre des caractéristiques robustes et éviter la mémorisation.
     *   **Focal Loss** : Pour se concentrer sur les exemples difficiles.
 
+2.  **Optimisation des Hyperparamètres (`optimize_hyperparameters_hf.py`)** :
+    *   Utilise **Optuna** avec le sampler **TPE (Tree-structured Parzen Estimator)** pour rechercher automatiquement les meilleurs hyperparamètres.
+    *   **Hyperparamètres optimisés** :
+        *   Learning rate (1e-5 à 5e-4, log scale)
+        *   Weight decay (1e-5 à 1e-2, log scale)
+        *   LR ratio backbone/head (0.01 à 0.2)
+        *   Dropout (0.3 à 0.5)
+        *   Label smoothing (0.0 à 0.05)
+        *   Nombre de blocs à dégeler (1-4)
+        *   Époque de dégel (2-4)
+        *   Type de scheduler (OneCycleLR ou CosineWarmup)
+    *   **Pruning adaptatif** : HyperbandPruner pour arrêter les essais non prometteurs tôt.
+    *   **SWA (Stochastic Weight Averaging)** : Active à partir de 70% de l'entraînement pour stabiliser les derniers pourcents.
+    *   **Upload automatique** : Les meilleurs modèles sont automatiquement sauvegardés sur Hugging Face Hub.
+    *   **20 trials** de 15 epochs chacun pour trouver la configuration optimale.
+
 2.  **Optimisation & Pruning (`optimize_prune_quantize.py`)** :
-    *   **Pruning** : Suppression de 30% des poids les moins importants (L1 Unstructured) pour alléger le modèle.
+    *   **Pruning** : Suppression de 20% des poids les moins importants (L1 Unstructured) pour alléger le modèle.
     *   **Quantization** : Conversion et optimisation pour réduire la taille et accélérer l'inférence.
 
-3.  **Export ONNX avec CAM (`export_onnx_with_cam.py`)** :
+4.  **Ou export ONNX avec CAM (quantizé/prunné aussi) (`optimize_prune_quantize_with_cam.py`)**:
     *   Exporte le modèle au format **ONNX FP16**.
     *   Intègre les sorties nécessaires pour le **Class Activation Mapping (CAM)**, permettant de générer les heatmaps de visualisation directement depuis ONNX, sans avoir besoin de PyTorch complet en production.
     *   Benchmark automatique de la latence et de la précision après export.
