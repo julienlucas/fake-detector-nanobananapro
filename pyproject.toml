@@ -9,22 +9,12 @@ dependencies = [
     "django>=5.2.6",
     "django-cors-headers>=4.3.0",
     "python-dotenv>=1.1.1",
-    "langsmith>=0.1.0",
     "numpy<2.0.0",
     "onnxruntime>=1.16.0",
     "pillow>=11.0.0",
-    # TRAINING/DEV - Commenter en production pour réduire RAM
-    # PyTorch (très lourd, ~2-3GB RAM)
-    # "torch>=2.2.0",
-    # "torchvision>=0.15.0",
-    # "torchmetrics>=1.8.2",
-    # "lightning>=2.0.0",
-    # "optuna>=4.0.0",
-    # "datasets>=2.14.0",
-    # "huggingface_hub>=0.16.0",
-    # "onnx>=1.20.1",
-    # "onnxscript>=0.6.0",
-    # "onnxconverter-common>=1.14.0",
-    # "tqdm>=4.67.1",
-    # "dotenv>=0.9.9",  # Doublon avec python-dotenv
+]
+
+[project.optional-dependencies]
+tracking = [
+    "langsmith>=0.1.0",
 ]
