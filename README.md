@@ -8,8 +8,11 @@ Application web permettant de détecter si une image a été générée par une 
 
 ![Fakefinder](./static/header.png)
 
-## 📁 Dataset
-C
+## 📁 Dataset d'entraînement
+12000 images (6000 réelles / 3000 Midjourney,SD,Dall-e / 3000 Nano Banana Pro)
+```bash
+https://huggingface.co/datasets/julienlucas/midjourney-dalle-sd-nanobananapro-dataset
+```
 
 ## 🏗 Architecture
 
