@@ -3,7 +3,7 @@
   "outputDirectory": "frontend/dist",
   "installCommand": "echo 'Skipping root install'",
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api" }
+    { "source": "/api/(.*)", "destination": "/api/index.py" }
   ],
   "headers": [
     {
