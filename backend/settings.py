@@ -75,16 +75,50 @@ AUTH_PASSWORD_VALIDATORS = [
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static", BASE_DIR / "frontend" / "dist"]
 
-# CORS - Allow frontend on Vercel to call the API
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8080",
-    "http://localhost:5173",
-]
-# Add your Vercel domain here, e.g.:
-# CORS_ALLOWED_ORIGINS += ["https://your-app.vercel.app"]
+# CORS - Configuration différente selon la plateforme
 import os
-if os.environ.get("CORS_ALLOWED_ORIGIN"):
-    CORS_ALLOWED_ORIGINS.append(os.environ.get("CORS_ALLOWED_ORIGIN"))
+
+# Détecter la plateforme de déploiement
+is_vercel = os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_ENV")
+is_railway = os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")
+cors_origin = os.environ.get("CORS_ALLOWED_ORIGIN", "")
+
+if is_vercel:
+    # Sur Vercel : CORS ouvert pour les extensions Chrome
+    CORS_ALLOW_ALL_ORIGINS = True
+    CORS_ALLOW_CREDENTIALS = True
+elif is_railway:
+    # Sur Railway : CORS restrictif (seulement les origines autorisées)
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:8080",
+        "http://localhost:5173",
+        "https://fakefinder.vercel.app",  # Frontend Vercel
+    ]
+    if cors_origin and cors_origin != "*":
+        # Ajouter les origines spécifiques depuis la variable d'env
+        origins = [origin.strip() for origin in cors_origin.split(",")]
+        CORS_ALLOWED_ORIGINS.extend(origins)
+else:
+    # Local : CORS pour développement
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:8080",
+        "http://localhost:5173",
+    ]
+    if cors_origin and cors_origin != "*":
+        CORS_ALLOWED_ORIGINS.append(cors_origin)
+
+# Autoriser les headers nécessaires pour les extensions Chrome
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
 
 # Internationalization
 # https://docs.djangoproject.com/en/4.1/topics/i18n/

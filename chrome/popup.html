@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FakeFinder</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🔍 FakeFinder</h1>
+      <p class="subtitle">Détecteur d'Images IA</p>
+    </div>
+
+    <div class="settings">
+      <label>
+        <span>URL du Backend:</span>
+        <input type="text" id="backendUrl" placeholder="https://fakefinder.vercel.app" />
+      </label>
+      <button id="saveSettings">Enregistrer</button>
+    </div>
+
+    <div class="instructions">
+      <p><strong>Comment utiliser:</strong></p>
+      <ol>
+        <li>Cliquez sur l'icône de l'extension</li>
+        <li>Cliquez sur une image sur la page web</li>
+        <li>Attendez l'analyse...</li>
+      </ol>
+    </div>
+
+    <div id="status" class="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
