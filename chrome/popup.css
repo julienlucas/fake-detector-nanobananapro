@@ -208,3 +208,18 @@ body {
   color: #721c24;
   display: block;
 }
+
+.model-status {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 15px;
+  text-align: center;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.model-status p {
+  color: #666;
+  font-size: 14px;
+  margin-top: 10px;
+}

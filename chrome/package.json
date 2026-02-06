@@ -1,0 +1,14 @@
+{
+  "name": "fakefinder-chrome-extension",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.21.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
