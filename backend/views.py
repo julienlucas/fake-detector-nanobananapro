@@ -18,11 +18,13 @@ load_dotenv()
 # Import lazy pour éviter les erreurs au démarrage
 predict_simple = None
 
-# Configuration LangSmith pour le tracking (si besoin) - désactivé pour éviter les erreurs
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
-os.environ["LANGCHAIN_PROJECT"] = "fakefinder-nanobananapro"
+# Configuration LangSmith pour le tracking (si besoin)
+langsmith_key = os.getenv("LANGSMITH_API_KEY")
+if langsmith_key:
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+    os.environ["LANGCHAIN_API_KEY"] = langsmith_key
+    os.environ["LANGCHAIN_PROJECT"] = "fakefinder-nanobananapro"
 
 try:
     from .inference_onnx import get_onnx_session

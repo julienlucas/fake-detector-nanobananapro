@@ -92,26 +92,38 @@ cors_origin = os.environ.get("CORS_ALLOWED_ORIGIN", "")
 print(f"[CORS DEBUG] is_vercel={is_vercel}, is_railway={is_railway}, cors_origin={cors_origin}")
 
 if is_vercel:
-    # Sur Vercel : CORS ouvert pour les extensions Chrome
-    CORS_ALLOW_ALL_ORIGINS = True
-    CORS_ALLOW_CREDENTIALS = True
-    print("[CORS] Configuration Vercel: CORS_ALLOW_ALL_ORIGINS = True")
-elif is_railway:
-    # Sur Railway : CORS restrictif (seulement les origines autorisées)
+    # Sur Vercel : CORS pour localhost et extensions Chrome
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:8080",
         "http://localhost:5173",
-        "https://fakefinder.vercel.app",  # Frontend Vercel
+    ]
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^chrome-extension://.*$",
+    ]
+    CORS_ALLOW_CREDENTIALS = True
+    print("[CORS] Configuration Vercel")
+elif is_railway:
+    # Sur Railway : CORS pour le frontend Vercel, localhost et extensions Chrome
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:8080",
+        "http://localhost:5173",
+        "https://fakefinder.vercel.app",
+    ]
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^chrome-extension://.*$",
     ]
     if cors_origin and cors_origin != "*":
-        # Ajouter les origines spécifiques depuis la variable d'env
         origins = [origin.strip() for origin in cors_origin.split(",")]
         CORS_ALLOWED_ORIGINS.extend(origins)
+    print(f"[CORS] Configuration Railway: origins={CORS_ALLOWED_ORIGINS}")
 else:
-    # Local : CORS pour développement
+    # Local : CORS pour développement + extensions Chrome
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:8080",
         "http://localhost:5173",
+    ]
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^chrome-extension://.*$",
     ]
     if cors_origin and cors_origin != "*":
         CORS_ALLOWED_ORIGINS.append(cors_origin)
