@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FakeFinder</title>
+  <title>FakeFinder IA vs Real</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -13,21 +13,25 @@
       <p class="subtitle">Détecteur d'Images IA</p>
     </div>
 
-    <div class="settings">
-      <label>
-        <span>URL du Backend:</span>
-        <input type="text" id="backendUrl" placeholder="https://fakefinder.vercel.app" />
+    <div class="upload-section">
+      <label for="imageInput" class="upload-label">
+        <div class="upload-area" id="uploadArea">
+          <span class="upload-icon">📷</span>
+          <span class="upload-text">Cliquez pour sélectionner une image</span>
+          <span class="upload-hint">ou glissez-déposez ici</span>
+        </div>
+        <input type="file" id="imageInput" accept="image/*" style="display: none;" />
       </label>
-      <button id="saveSettings">Enregistrer</button>
     </div>
 
-    <div class="instructions">
-      <p><strong>Comment utiliser:</strong></p>
-      <ol>
-        <li>Cliquez sur l'icône de l'extension</li>
-        <li>Cliquez sur une image sur la page web</li>
-        <li>Attendez l'analyse...</li>
-      </ol>
+    <div id="previewSection" class="preview-section" style="display: none;">
+      <img id="previewImage" class="preview-image" />
+      <div id="resultInfo" class="result-info"></div>
+    </div>
+
+    <div id="loading" class="loading" style="display: none;">
+      <div class="spinner"></div>
+      <p>Analyse en cours...</p>
     </div>
 
     <div id="status" class="status"></div>

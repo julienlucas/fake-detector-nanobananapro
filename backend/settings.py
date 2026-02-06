@@ -79,14 +79,23 @@ STATICFILES_DIRS = [BASE_DIR / "static", BASE_DIR / "frontend" / "dist"]
 import os
 
 # Détecter la plateforme de déploiement
-is_vercel = os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_ENV")
+is_vercel = (
+    os.environ.get("VERCEL") == "1" 
+    or os.environ.get("VERCEL_ENV")
+    or "vercel" in os.environ.get("PATH", "").lower()
+    or os.environ.get("VERCEL_URL")
+)
 is_railway = os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")
 cors_origin = os.environ.get("CORS_ALLOWED_ORIGIN", "")
+
+# Debug: afficher la détection (à retirer en prod si besoin)
+print(f"[CORS DEBUG] is_vercel={is_vercel}, is_railway={is_railway}, cors_origin={cors_origin}")
 
 if is_vercel:
     # Sur Vercel : CORS ouvert pour les extensions Chrome
     CORS_ALLOW_ALL_ORIGINS = True
     CORS_ALLOW_CREDENTIALS = True
+    print("[CORS] Configuration Vercel: CORS_ALLOW_ALL_ORIGINS = True")
 elif is_railway:
     # Sur Railway : CORS restrictif (seulement les origines autorisées)
     CORS_ALLOWED_ORIGINS = [

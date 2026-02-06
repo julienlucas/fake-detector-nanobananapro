@@ -89,10 +89,14 @@ export default function Index() {
       body.append("file", fileToUpload);
 
       const apiUrl = import.meta.env.VITE_RAILWAY_API_URL || '';
-      const response = await fetch(`${apiUrl}/api/inference`, {
-        method: "POST",
-        body,
-      });
+      const baseUrl = apiUrl || window.location.origin;
+      const response = await fetch(
+        `${baseUrl}/api/inference`,
+        {
+          method: "POST",
+          body,
+        },
+      );
 
       if (!response.ok) {
         const errorData = await response.json();

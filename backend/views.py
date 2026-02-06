@@ -70,9 +70,18 @@ def index(request):
         return HttpResponse(f"Error: {str(e)}\n\n{traceback.format_exc()}", status=500, content_type='text/plain')
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@require_http_methods(["POST", "OPTIONS"])
 def inference_api(request):
     """Route d'inférence pour détecter les deepfakes avec Grad-CAM"""
+    # Gérer la requête OPTIONS (preflight CORS)
+    if request.method == "OPTIONS":
+        response = HttpResponse()
+        response["Access-Control-Allow-Origin"] = "*"
+        response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Content-Type"
+        response["Access-Control-Max-Age"] = "3600"
+        return response
+    
     try:
         import base64
         import time
@@ -110,6 +119,11 @@ def inference_api(request):
             "fake_confidence": fake_confidence_value,
             "image": f"data:image/png;base64,{img_base64}"
         })
+        
+        # Ajouter les headers CORS manuellement pour garantir leur présence
+        response["Access-Control-Allow-Origin"] = "*"
+        response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Content-Type"
 
         if client:
             try:
