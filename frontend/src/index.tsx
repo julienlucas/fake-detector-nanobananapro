@@ -10,8 +10,8 @@ const exampleImages = [
   { value: "/static/2c857321-56eb-437d-9abb-f2f97e98628a_min.webp", label: "Fake Nano Banana Pro" },
   { value: "/static/45180048-3fd8-441f-874f-c8a9b56b5b02_min.webp", label: "Fake Nano Banana Pro" },
   { value: "/static/abc85fe7-a3c2-4374-931a-4bee66bd4d9d_min.webp", label: "Fake Nano Banana Pro" },
-  { value: "/static/G6GI9FqWMAAuZ_j.jpg", label: "Réel" },
-  { value: "/static/GGQ_1723662752223_1723662762427.webp", label: "Réel" },
+  { value: "/static/G6GI9FqWMAAuZ_j.jpg", label: "Image IA inconnue" },
+  { value: "/static/GGQ_1723662752223_1723662762427.webp", label: "Image IA inconnue" },
 ];
 
 export default function Index() {
