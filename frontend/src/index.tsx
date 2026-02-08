@@ -138,15 +138,14 @@ export default function Index() {
         <CardDescription className="text-center text-2xl font-bold text-black mx-auto max-w-md">
           Détectez les fakes Nano Banana Pro et images générées avec l'IA
         </CardDescription>
-        <CardDescription className="text-center text-sm mx-auto max-w-xl">
+        <CardDescription className="text-center text-sm mx-auto max-w-xl w-full">
           <strong>Modèle fine-tuné par deep learning</strong> détectant aussi
           les images de diffusion Midjourney, SD et DALL-E
           <br />
-          Testé sur 2000 images diverses (ainsi que des selfies smartphone
+          Testé sur 2000 images de style varié (ainsi que des selfies smartphone
           spécifiquement)
           <br />
-          Précision globale: 90% (et 90% de score F1 — soit un niveau de confiance affuté)
-          Précision sur selfies smartphone: 80%
+          Précision: 90% (et 90% de score F1 — 90% de confiance sur chacunes des 2 classes)
         </CardDescription>
       </CardHeader>
       <Card className="border-none shadow-none">

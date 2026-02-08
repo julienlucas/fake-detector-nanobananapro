@@ -10,10 +10,15 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 import utils.helper_utils as helper_utils
 
+# Répertoires de test (structure fake/real attendue sauf si USE_CUSTOM_DIR)
 DATA_DIRS = [
-  os.path.join("../AIvsReal_nanobanana_pro", "test"),
-  os.path.join("../AIvsReal_midjourney_dalle_sd", "test"),
+    os.path.join("../AIvsReal_nanobanana_pro", "test"),
+    os.path.join("../AIvsReal_midjourney_dalle_sd", "test"),
 ]
+# True = utiliser uniquement CUSTOM_DATA_DIR (ex: ton répertoire de photos)
+USE_CUSTOM_DIR = True
+CUSTOM_DATA_DIR = "../static/photos"
+
 MAX_PER_DATASET = 500
 
 # Choisir le modèle : définir l'un des deux (l'autre à None)
@@ -43,6 +48,10 @@ class FlatImageFolder(Dataset):
         return img, 0
 
 
+def _is_labeled_dir(path):
+    return os.path.isdir(os.path.join(path, "fake")) and os.path.isdir(os.path.join(path, "real"))
+
+
 class ChestXRayDataModule(pl.LightningDataModule):
     def __init__(self, data_dirs, batch_size=32, image_size=384, max_per_dataset=250):
         super().__init__()
@@ -56,7 +65,8 @@ class ChestXRayDataModule(pl.LightningDataModule):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         self.val_dataset = None
-        self.class_names = None
+        self.class_names = ["fake", "real"]
+        self.has_labels = True
 
     def setup(self, stage=None):
         from torch.utils.data import ConcatDataset
@@ -69,23 +79,15 @@ class ChestXRayDataModule(pl.LightningDataModule):
                 print(f"SKIP: Répertoire introuvable: {data_dir}")
                 continue
 
-            dataset = datasets.ImageFolder(data_dir, self.val_transform)
-
-            # Extraire le nom du dataset depuis le chemin
-            normalized_path = os.path.abspath(os.path.normpath(data_dir))
-            parts = normalized_path.split(os.sep)
-            # Chercher le nom du dataset (avant "test")
-            dataset_name = "dataset"
-            for part in parts:
-                if part in ["AIvsReal_nanobanana_pro", "AIvsReal_midjourney_dalle_sd"]:
-                    dataset_name = part
-                    break
-            if dataset_name == "dataset" and len(parts) >= 2:
-                # Prendre le nom du répertoire parent de "test"
-                dataset_name = parts[-2] if parts[-1] == "test" else parts[-1]
+            if _is_labeled_dir(data_dir):
+                dataset = datasets.ImageFolder(data_dir, self.val_transform)
+                dataset_name = os.path.basename(os.path.normpath(data_dir))
+            else:
+                dataset = FlatImageFolder(data_dir, self.val_transform)
+                self.has_labels = False
+                dataset_name = os.path.basename(os.path.normpath(data_dir))
 
             total_images = len(dataset)
-
             if total_images > self.max_per_dataset:
                 indices = list(range(total_images))
                 rng.shuffle(indices)
@@ -211,7 +213,13 @@ def load_efficientnetv2s_model(checkpoint_path, num_classes=2):
 
 
 def main():
-    valid_dirs = [d for d in DATA_DIRS if os.path.exists(d)]
+    if USE_CUSTOM_DIR:
+        data_dirs = [CUSTOM_DATA_DIR] if os.path.isdir(CUSTOM_DATA_DIR) else []
+    else:
+        data_dirs = DATA_DIRS
+    valid_dirs = [d for d in data_dirs if os.path.exists(d)]
+    if not valid_dirs:
+        raise FileNotFoundError(f"Aucun répertoire valide. USE_CUSTOM_DIR={USE_CUSTOM_DIR}, dirs={data_dirs}")
     if ONNX_MODEL_PATH and os.path.exists(ONNX_MODEL_PATH):
         use_onnx = True
         model_path = ONNX_MODEL_PATH
@@ -277,44 +285,52 @@ def main():
     all_preds = all_preds.to(device)
     all_labels = all_labels.to(device)
 
-    from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, Precision, Recall
-    confmat = MulticlassConfusionMatrix(num_classes=num_classes).to(device)
-    cm = confmat(all_preds, all_labels)
-    f1_macro = F1Score(task="multiclass", num_classes=num_classes, average='macro').to(device)
-    f1_per_class = F1Score(task="multiclass", num_classes=num_classes, average='none').to(device)
-    precision = Precision(task="multiclass", num_classes=num_classes, average='none').to(device)
-    recall = Recall(task="multiclass", num_classes=num_classes, average='none').to(device)
-    f1_macro_score = f1_macro(all_preds, all_labels)
-    f1_per_class_scores = f1_per_class(all_preds, all_labels)
-    precision_scores = precision(all_preds, all_labels)
-    recall_scores = recall(all_preds, all_labels)
-    per_class_acc = cm.diag() / cm.sum(axis=1)
-    total = cm.sum().item()
-    correct = cm.diag().sum().item()
-    acc_global = (correct / total) if total else 0.0
+    if dm.has_labels:
+        from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, Precision, Recall
+        confmat = MulticlassConfusionMatrix(num_classes=num_classes).to(device)
+        cm = confmat(all_preds, all_labels)
+        f1_macro = F1Score(task="multiclass", num_classes=num_classes, average='macro').to(device)
+        f1_per_class = F1Score(task="multiclass", num_classes=num_classes, average='none').to(device)
+        precision = Precision(task="multiclass", num_classes=num_classes, average='none').to(device)
+        recall = Recall(task="multiclass", num_classes=num_classes, average='none').to(device)
+        f1_macro_score = f1_macro(all_preds, all_labels)
+        f1_per_class_scores = f1_per_class(all_preds, all_labels)
+        precision_scores = precision(all_preds, all_labels)
+        recall_scores = recall(all_preds, all_labels)
+        per_class_acc = cm.diag() / cm.sum(axis=1)
+        total = cm.sum().item()
+        correct = cm.diag().sum().item()
+        acc_global = (correct / total) if total else 0.0
 
-    # Calculer les faux positifs depuis la matrice de confusion
-    # FP pour classe i = nombre de fois où on prédit i mais c'est une autre classe
-    cm_np = cm.cpu().numpy()
-    false_positives = []
-    for i in range(num_classes):
-        fp = cm_np[i].sum() - cm_np[i][i]  # Total prédictions classe i - TP
-        false_positives.append(fp)
+        cm_np = cm.cpu().numpy()
+        false_positives = []
+        for i in range(num_classes):
+            fp = cm_np[i].sum() - cm_np[i][i]
+            false_positives.append(fp)
 
-    print("--- Rapport de précision par classe ---")
-    print(f"Précision globale (Accuracy) : {acc_global:.2%} ({correct}/{total} images)")
-    print(f"F1 Score (macro) : {f1_macro_score.item():.4f}")
-    print()
-    for i, acc in enumerate(per_class_acc):
-        fp_pct = (false_positives[i] / total) if total > 0 else 0.0
-        print(f"Classe '{class_names[i]}':")
-        print(f"  - Accuracy : {acc.item():.2%}")
-        print(f"  - Precision : {precision_scores[i].item():.2%}")
-        print(f"  - Recall : {recall_scores[i].item():.2%}")
-        print(f"  - F1 Score : {f1_per_class_scores[i].item():.4f}")
-        print(f"  - Faux Positifs (FP) : {fp_pct:.2%}")
-    print()
-    helper_utils.plot_confusion_matrix(cm.cpu().numpy(), class_names)
+        print("--- Rapport de précision par classe ---")
+        print(f"Précision globale (Accuracy) : {acc_global:.2%} ({correct}/{total} images)")
+        print(f"F1 Score (macro) : {f1_macro_score.item():.4f}")
+        print()
+        for i, acc in enumerate(per_class_acc):
+            fp_pct = (false_positives[i] / total) if total > 0 else 0.0
+            print(f"Classe '{class_names[i]}':")
+            print(f"  - Accuracy : {acc.item():.2%}")
+            print(f"  - Precision : {precision_scores[i].item():.2%}")
+            print(f"  - Recall : {recall_scores[i].item():.2%}")
+            print(f"  - F1 Score : {f1_per_class_scores[i].item():.4f}")
+            print(f"  - Faux Positifs (FP) : {fp_pct:.2%}")
+        print()
+        helper_utils.plot_confusion_matrix(cm.cpu().numpy(), class_names)
+    else:
+        total = all_preds.numel()
+        fake_count = (all_preds == 0).sum().item()
+        real_count = (all_preds == 1).sum().item()
+        print("--- Prédictions (répertoire sans labels fake/real) ---")
+        print(f"Total images : {total}")
+        print(f"  fake : {fake_count} ({100 * fake_count / total:.1f}%)")
+        print(f"  real : {real_count} ({100 * real_count / total:.1f}%)")
+        helper_utils.plot_prediction_distribution(fake_count, real_count)
 
 
 if __name__ == "__main__":
