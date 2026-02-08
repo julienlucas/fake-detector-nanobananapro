@@ -105,3 +105,5 @@ Les scripts dans le répertoire `training/` permettent de reproduire le modèle 
 
 ### Modèles
 Les modèles entraînés et optimisés sont stockés dans le dossier `/models` (ou `training/models` avant export final). Le backend utilise la version `.onnx` pour une performance maximale.
+
+Ajoutez une étoile ⭐ si vous appréciez mon travail. 🙏
