@@ -1,4 +1,4 @@
-import * as ort from 'onnxruntime-web';
+import * as ort from "onnxruntime-web";
 
 const IMAGE_SIZE = 384;
 const IMAGENET_MEAN = [0.485, 0.456, 0.406];
@@ -8,92 +8,59 @@ const FAKE_THRESHOLD = 0.7;
 
 let _session = null;
 
-/**
- * Initialize the ONNX session from the model bundled with the extension.
- */
 export async function initModel() {
   if (_session) return;
-
+  ort.env.logLevel = "error";
   ort.env.wasm.numThreads = 1;
-
-  // Point onnxruntime-web to the WASM files bundled with the extension
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
-    ort.env.wasm.wasmPaths = chrome.runtime.getURL('/');
+  if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+    ort.env.wasm.wasmPaths = chrome.runtime.getURL("/");
   }
-
-  // Load model from extension bundle
-  const modelUrl = chrome.runtime.getURL('model.onnx');
+  const modelUrl = chrome.runtime.getURL("model.onnx");
   const response = await fetch(modelUrl);
   const modelBuffer = await response.arrayBuffer();
-
-  _session = await ort.InferenceSession.create(modelBuffer, {
-    executionProviders: ['wasm'],
-  });
+  _session = await ort.InferenceSession.create(modelBuffer, { executionProviders: ["wasm"] });
 }
 
 export function isModelReady() {
   return _session !== null;
 }
 
-/**
- * Preprocess an image into an ONNX tensor.
- * Replicates the Python preprocessing: resize 384x384, /255, ImageNet normalize, HWC->CHW.
- */
 function preprocessImage(canvas, ctx) {
   ctx.drawImage(canvas._sourceImage, 0, 0, IMAGE_SIZE, IMAGE_SIZE);
   const imageData = ctx.getImageData(0, 0, IMAGE_SIZE, IMAGE_SIZE);
   const { data } = imageData;
-
-  // Create Float32Array in [1, 3, 384, 384] layout (NCHW)
   const float32Data = new Float32Array(1 * 3 * IMAGE_SIZE * IMAGE_SIZE);
-
   for (let y = 0; y < IMAGE_SIZE; y++) {
     for (let x = 0; x < IMAGE_SIZE; x++) {
       const pixelIdx = (y * IMAGE_SIZE + x) * 4;
-      const r = data[pixelIdx] / 255.0;
-      const g = data[pixelIdx + 1] / 255.0;
-      const b = data[pixelIdx + 2] / 255.0;
-
-      // ImageNet normalization + CHW layout
+      const r = data[pixelIdx] / 255.0, g = data[pixelIdx + 1] / 255.0, b = data[pixelIdx + 2] / 255.0;
       const pos = y * IMAGE_SIZE + x;
       float32Data[0 * IMAGE_SIZE * IMAGE_SIZE + pos] = (r - IMAGENET_MEAN[0]) / IMAGENET_STD[0];
       float32Data[1 * IMAGE_SIZE * IMAGE_SIZE + pos] = (g - IMAGENET_MEAN[1]) / IMAGENET_STD[1];
       float32Data[2 * IMAGE_SIZE * IMAGE_SIZE + pos] = (b - IMAGENET_MEAN[2]) / IMAGENET_STD[2];
     }
   }
-
-  return new ort.Tensor('float32', float32Data, [1, 3, IMAGE_SIZE, IMAGE_SIZE]);
+  return new ort.Tensor("float32", float32Data, [1, 3, IMAGE_SIZE, IMAGE_SIZE]);
 }
 
 function softmax(arr) {
   const max = Math.max(...arr);
-  const exps = arr.map(x => Math.exp(x - max));
+  const exps = arr.map((x) => Math.exp(x - max));
   const sum = exps.reduce((a, b) => a + b, 0);
-  return exps.map(x => x / sum);
+  return exps.map((x) => x / sum);
 }
 
-/**
- * Load an image source (URL, data URL, or Blob) into an HTMLImageElement.
- * @returns {Promise<HTMLImageElement>}
- */
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
-    img.onerror = (e) => reject(new Error('Failed to load image'));
-    if (src instanceof Blob) {
-      img.src = URL.createObjectURL(src);
-    } else {
-      img.src = src;
-    }
+    img.onerror = () => reject(new Error("Failed to load image"));
+    if (src instanceof Blob) img.src = URL.createObjectURL(src);
+    else img.src = src;
   });
 }
 
-/**
- * Draw bounding box + label on a canvas, replicating the Python draw_bboxes_numpy.
- * Returns a data URL of the annotated image.
- */
 function drawBbox(img, label, color, confidence) {
   const canvas = document.createElement('canvas');
   canvas.width = img.naturalWidth || img.width;

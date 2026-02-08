@@ -1,42 +1,42 @@
-document.addEventListener('DOMContentLoaded', async () => {
-  const imageInput = document.getElementById('imageInput');
-  const uploadArea = document.getElementById('uploadArea');
-  const previewSection = document.getElementById('previewSection');
-  const previewImage = document.getElementById('previewImage');
-  const resultInfo = document.getElementById('resultInfo');
-  const loading = document.getElementById('loading');
-  const statusDiv = document.getElementById('status');
-  const resetButton = document.getElementById('resetButton');
+document.addEventListener("DOMContentLoaded", async () => {
+  const imageInput = document.getElementById("imageInput");
+  const uploadArea = document.getElementById("uploadArea");
+  const previewSection = document.getElementById("previewSection");
+  const previewImage = document.getElementById("previewImage");
+  const resultInfo = document.getElementById("resultInfo");
+  const loading = document.getElementById("loading");
+  const statusDiv = document.getElementById("status");
+  const resetButton = document.getElementById("resetButton");
 
   // Gérer le drag & drop
-  uploadArea.addEventListener('dragover', (e) => {
+  uploadArea.addEventListener("dragover", (e) => {
     e.preventDefault();
-    uploadArea.classList.add('dragover');
+    uploadArea.classList.add("dragover");
   });
 
-  uploadArea.addEventListener('dragleave', () => {
-    uploadArea.classList.remove('dragover');
+  uploadArea.addEventListener("dragleave", () => {
+    uploadArea.classList.remove("dragover");
   });
 
-  uploadArea.addEventListener('drop', (e) => {
+  uploadArea.addEventListener("drop", (e) => {
     e.preventDefault();
-    uploadArea.classList.remove('dragover');
+    uploadArea.classList.remove("dragover");
     const files = e.dataTransfer.files;
-    if (files.length > 0 && files[0].type.startsWith('image/')) {
+    if (files.length > 0 && files[0].type.startsWith("image/")) {
       handleImageFile(files[0]);
     }
   });
 
   // Gérer la sélection de fichier
-  imageInput.addEventListener('change', (e) => {
+  imageInput.addEventListener("change", (e) => {
     if (e.target.files.length > 0) {
       handleImageFile(e.target.files[0]);
     }
   });
 
   async function handleImageFile(file) {
-    if (!file.type.startsWith('image/')) {
-      showStatus('Veuillez sélectionner une image', 'error');
+    if (!file.type.startsWith("image/")) {
+      showStatus("Veuillez sélectionner une image", "error");
       return;
     }
 
@@ -44,10 +44,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const reader = new FileReader();
     reader.onload = (e) => {
       previewImage.src = e.target.result;
-      previewSection.style.display = 'block';
-      uploadArea.style.display = 'none';
-      loading.style.display = 'flex';
-      resultInfo.innerHTML = '';
+      previewSection.style.display = "block";
+      uploadArea.style.display = "none";
+      loading.style.display = "flex";
+      resultInfo.innerHTML = "";
     };
     reader.readAsDataURL(file);
 
@@ -57,30 +57,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function analyzeImage(file) {
     try {
-      const backendUrl = await getBackendUrl();
-      const formData = new FormData();
-      formData.append('file', file);
+      const result = await runInference(file);
 
-      const response = await fetch(`${backendUrl}/api/inference`, {
-        method: 'POST',
-        body: formData
-      });
+      loading.style.display = "none";
 
-      if (!response.ok) {
-        throw new Error(`Erreur API: ${response.status}`);
-      }
-
-      const result = await response.json();
-      
-      // Afficher le résultat
-      loading.style.display = 'none';
-      
       if (result.image) {
         previewImage.src = result.image;
       }
 
-      const label = result.label === 'fake' ? 'FAKE' : 'REAL';
-      const color = result.label === 'fake' ? '#f44336' : '#4CAF50';
+      const label = result.label === "fake" ? "FAKE" : "REAL";
+      const color = result.label === "fake" ? "#f44336" : "#4CAF50";
       const confidence = (result.confidence * 100).toFixed(1);
 
       resultInfo.innerHTML = `
@@ -92,48 +78,42 @@ document.addEventListener('DOMContentLoaded', async () => {
           <div>Fake: ${(result.fake_confidence * 100).toFixed(1)}%</div>
         </div>
       `;
-      resultInfo.style.display = 'block';
-
+      resultInfo.style.display = "block";
     } catch (error) {
-      loading.style.display = 'none';
-      showStatus(`Erreur: ${error.message}`, 'error');
-      console.error('Erreur analyse:', error);
+      loading.style.display = "none";
+      showStatus(`Erreur: ${error.message}`, "error");
+      console.error("Erreur analyse:", error);
     }
-  }
-
-  async function getBackendUrl() {
-    const result = await chrome.storage.sync.get(['backendUrl']);
-    return result.backendUrl || 'https://fakefinder-nanobananapro.up.railway.app';
   }
 
   function showStatus(message, type) {
     statusDiv.textContent = message;
     statusDiv.className = `status ${type}`;
-    statusDiv.style.display = 'block';
+    statusDiv.style.display = "block";
     setTimeout(() => {
-      statusDiv.style.display = 'none';
+      statusDiv.style.display = "none";
     }, 5000);
   }
 
   // Fonction pour réinitialiser
   function reset() {
-    previewSection.style.display = 'none';
-    uploadArea.style.display = 'flex';
-    resultInfo.innerHTML = '';
-    imageInput.value = '';
-    loading.style.display = 'none';
-    statusDiv.style.display = 'none';
+    previewSection.style.display = "none";
+    uploadArea.style.display = "flex";
+    resultInfo.innerHTML = "";
+    imageInput.value = "";
+    loading.style.display = "none";
+    statusDiv.style.display = "none";
   }
 
   // Bouton reset
-  resetButton.addEventListener('click', (e) => {
+  resetButton.addEventListener("click", (e) => {
     e.stopPropagation();
     reset();
   });
 
   // Reset pour analyser une nouvelle image (clic sur upload area)
-  uploadArea.addEventListener('click', () => {
-    if (previewSection.style.display === 'block') {
+  uploadArea.addEventListener("click", () => {
+    if (previewSection.style.display === "block") {
       reset();
     }
   });

@@ -1,61 +1,51 @@
-import { build } from 'esbuild';
-import { cpSync, mkdirSync, existsSync, createWriteStream } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
-import { pipeline } from 'stream/promises';
+import { build } from "esbuild";
+import { cpSync, mkdirSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const distDir = join(__dirname, 'dist');
-
-const MODEL_URL = 'https://huggingface.co/julienlucas/fakefinder/resolve/main/models/best_f191.5_acc91.5_efficientnetv2s_fake_detector_fp16.onnx';
-const MODEL_FILENAME = 'model.onnx';
+const distDir = join(__dirname, "dist");
+const modelSrc = join(__dirname, "model.onnx");
 
 mkdirSync(distDir, { recursive: true });
 
-// Download model from HuggingFace if not already in dist/
-const modelDest = join(distDir, MODEL_FILENAME);
-if (!existsSync(modelDest)) {
-  console.log('Downloading ONNX model from HuggingFace...');
-  const res = await fetch(MODEL_URL);
-  if (!res.ok) throw new Error(`Failed to download model: ${res.status}`);
-  const fileStream = createWriteStream(modelDest);
-  await pipeline(res.body, fileStream);
-  console.log('Model downloaded.');
-} else {
-  console.log('Model already present, skipping download.');
+if (!existsSync(modelSrc)) {
+  throw new Error("chrome/model.onnx introuvable. Placez le modèle dans chrome/model.onnx");
 }
+cpSync(modelSrc, join(distDir, "model.onnx"));
+console.log("Modèle copié dans dist.");
 
 // Find onnxruntime-web WASM files
-const ortDir = dirname(require.resolve('onnxruntime-web'));
+const ortDir = dirname(require.resolve("onnxruntime-web"));
 
 // Bundle popup.js
 await build({
-  entryPoints: [join(__dirname, 'src/popup-entry.js')],
+  entryPoints: [join(__dirname, "src/popup-entry.js")],
   bundle: true,
-  outfile: join(distDir, 'popup.js'),
-  format: 'iife',
-  target: 'chrome110',
+  outfile: join(distDir, "popup.js"),
+  format: "iife",
+  target: "chrome110",
   minify: false,
 });
 
 // Bundle content.js
 await build({
-  entryPoints: [join(__dirname, 'src/content-entry.js')],
+  entryPoints: [join(__dirname, "src/content-entry.js")],
   bundle: true,
-  outfile: join(distDir, 'content.js'),
-  format: 'iife',
-  target: 'chrome110',
+  outfile: join(distDir, "content.js"),
+  format: "iife",
+  target: "chrome110",
   minify: false,
 });
 
 // Copy WASM files from onnxruntime-web to dist
 const wasmFiles = [
-  'ort-wasm-simd-threaded.wasm',
-  'ort-wasm-simd.wasm',
-  'ort-wasm.wasm',
-  'ort-wasm-simd-threaded.jsep.wasm',
+  "ort-wasm-simd-threaded.wasm",
+  "ort-wasm-simd.wasm",
+  "ort-wasm.wasm",
+  "ort-wasm-simd-threaded.jsep.wasm",
 ];
 
 for (const file of wasmFiles) {
@@ -68,11 +58,11 @@ for (const file of wasmFiles) {
 
 // Copy static files to dist
 const staticFiles = [
-  'popup.html',
-  'popup.css',
-  'content.css',
-  'background.js',
-  'manifest.json',
+  "popup.html",
+  "styles.css",
+  "content.css",
+  "background.js",
+  "manifest.json",
 ];
 
 for (const file of staticFiles) {
@@ -80,13 +70,15 @@ for (const file of staticFiles) {
 }
 
 // Copy icons
-if (existsSync(join(__dirname, 'icons'))) {
-  cpSync(join(__dirname, 'icons'), join(distDir, 'icons'), { recursive: true });
+if (existsSync(join(__dirname, "icons"))) {
+  cpSync(join(__dirname, "icons"), join(distDir, "icons"), { recursive: true });
 }
 
 // Copy images
-if (existsSync(join(__dirname, 'images'))) {
-  cpSync(join(__dirname, 'images'), join(distDir, 'images'), { recursive: true });
+if (existsSync(join(__dirname, "images"))) {
+  cpSync(join(__dirname, "images"), join(distDir, "images"), {
+    recursive: true,
+  });
 }
 
-console.log('Build complete! Load chrome/dist as unpacked extension.');
+console.log("Build complete! Load chrome/dist as unpacked extension.");

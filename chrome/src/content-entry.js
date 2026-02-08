@@ -1,4 +1,4 @@
-import { initModel, isModelReady, runInference } from './inference.js';
+import { initModel, isModelReady, runInference } from "./inference.js";
 
 let isAnalyzing = false;
 let modelInitPromise = null;
@@ -6,7 +6,7 @@ let modelInitPromise = null;
 function ensureModel() {
   if (!modelInitPromise) {
     modelInitPromise = initModel().catch((err) => {
-      console.error('FakeFinder: model init failed', err);
+      console.error("FakeFinder: model init failed", err);
       modelInitPromise = null;
       throw err;
     });
@@ -15,11 +15,11 @@ function ensureModel() {
 }
 
 function createOverlay(image, result) {
-  const overlay = document.createElement('div');
-  overlay.className = 'fakefinder-overlay';
+  const overlay = document.createElement("div");
+  overlay.className = "fakefinder-overlay";
 
-  const label = result.label === 'fake' ? 'FAKE' : 'REAL';
-  const color = result.label === 'fake' ? '#f44336' : '#4CAF50';
+  const label = result.label === "fake" ? "FAKE" : "REAL";
+  const color = result.label === "fake" ? "#f44336" : "#4CAF50";
   const confidence = (result.confidence * 100).toFixed(1);
 
   overlay.innerHTML = `
@@ -43,12 +43,12 @@ function createOverlay(image, result) {
 
   document.body.appendChild(overlay);
 
-  overlay.querySelector('.fakefinder-close').addEventListener('click', () => {
+  overlay.querySelector(".fakefinder-close").addEventListener("click", () => {
     overlay.remove();
   });
 
   setTimeout(() => {
-    overlay.classList.add('show');
+    overlay.classList.add("show");
   }, 10);
 
   return overlay;
@@ -67,7 +67,7 @@ async function analyzeImage(imageUrl) {
     const result = await runInference(blob);
     return result;
   } catch (error) {
-    console.error('Erreur analyse:', error);
+    console.error("Erreur analyse:", error);
     throw error;
   } finally {
     isAnalyzing = false;
@@ -75,62 +75,66 @@ async function analyzeImage(imageUrl) {
 }
 
 function showLoading(image) {
-  const loading = document.createElement('div');
-  loading.className = 'fakefinder-loading';
+  const loading = document.createElement("div");
+  loading.className = "fakefinder-loading";
   const rect = image.getBoundingClientRect();
   loading.style.top = `${rect.top + window.scrollY + rect.height / 2}px`;
   loading.style.left = `${rect.left + window.scrollX + rect.width / 2}px`;
 
   if (!isModelReady()) {
-    loading.textContent = 'Chargement du modele...';
+    loading.textContent = "Chargement du modele...";
   } else {
-    loading.textContent = 'Analyse en cours...';
+    loading.textContent = "Analyse en cours...";
   }
 
   document.body.appendChild(loading);
   return loading;
 }
 
-document.addEventListener('click', async (e) => {
-  if (isAnalyzing) return;
+document.addEventListener(
+  "click",
+  async (e) => {
+    if (isAnalyzing) return;
 
-  let img = e.target;
-  if (img.tagName !== 'IMG') {
-    img = img.closest('img');
-  }
+    let img = e.target;
+    if (img.tagName !== "IMG") {
+      img = img.closest("img");
+    }
 
-  if (!img || img.classList.contains('fakefinder-processed')) return;
+    if (!img || img.classList.contains("fakefinder-processed")) return;
 
-  e.preventDefault();
-  e.stopPropagation();
+    e.preventDefault();
+    e.stopPropagation();
 
-  const imageUrl = img.src || img.dataset.src || img.currentSrc;
-  if (!imageUrl || imageUrl.startsWith('data:')) {
-    alert("Impossible d'analyser cette image");
-    return;
-  }
+    const imageUrl = img.src || img.dataset.src || img.currentSrc;
+    if (!imageUrl || imageUrl.startsWith("data:")) {
+      alert("Impossible d'analyser cette image");
+      return;
+    }
 
-  img.classList.add('fakefinder-processed');
-  const loading = showLoading(img);
+    img.classList.add("fakefinder-processed");
+    const loading = showLoading(img);
 
-  try {
-    const result = await analyzeImage(imageUrl);
+    try {
+      const result = await analyzeImage(imageUrl);
 
-    if (result.image) {
-      const resultImg = new Image();
-      resultImg.src = result.image;
-      resultImg.onload = () => {
-        img.src = result.image;
+      if (result.image) {
+        const resultImg = new Image();
+        resultImg.src = result.image;
+        resultImg.onload = () => {
+          img.src = result.image;
+          loading.remove();
+          createOverlay(img, result);
+        };
+      } else {
         loading.remove();
         createOverlay(img, result);
-      };
-    } else {
+      }
+    } catch (error) {
       loading.remove();
-      createOverlay(img, result);
+      alert(`Erreur: ${error.message}`);
+      img.classList.remove("fakefinder-processed");
     }
-  } catch (error) {
-    loading.remove();
-    alert(`Erreur: ${error.message}`);
-    img.classList.remove('fakefinder-processed');
-  }
-}, true);
+  },
+  true,
+);

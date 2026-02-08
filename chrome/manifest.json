@@ -1,18 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "FakeFinder - Détecteur d'Images IA",
-  "version": "2.0.0",
-  "description": "Détecte si une image a été générée par une IA (Midjourney, DALL-E, Stable Diffusion) ou si elle est réelle — inférence 100% locale",
+  "name": "FakeFinder - Détecteur de fakes IA",
+  "version": "1.0.0",
+  "description": "Détecte les images réels vs IA (Nano Banana Pro, Midjourney, DALL-E, Stable Diffusion) — inférence 100% locale",
   "author": "Julien Lucas",
-  "homepage_url": "https://fakefinder.vercel.app",
-  "permissions": [
-    "activeTab",
-    "storage"
-  ],
-  "host_permissions": [
-    "https://*/*",
-    "http://*/*"
-  ],
+  "permissions": ["activeTab", "scripting"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -21,13 +13,6 @@
       "128": "icons/apple-icon-144x144.png"
     }
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["content.css"]
-    }
-  ],
   "background": {
     "service_worker": "background.js"
   },

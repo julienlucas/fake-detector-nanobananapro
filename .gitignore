@@ -10,6 +10,7 @@ temp
 document_cache
 chroma_db
 frontend/node_modules/
+extension-build/
 models/*.pth
 static/photos/
 AIvsReal_nanobanana_pro
