@@ -28,7 +28,7 @@ export function Hero() {
             <h1 className="display-xl mt-4">
               Fake<span className="accent-italic">finder</span>
               <span className="display-md mt-2 block text-ink">
-                Différenciateur d'images réels vs images générées par IA — entrâiné sur modèles de diffusion Nano Banana Pro, Midjourney, DALL-E, Stable
+                Différenciateur d'images réels vs images générées par IA — entraîné sur modèles de diffusion Nano Banana Pro, Midjourney, DALL-E, Stable
                 Diffusion — avec 91,5 % de précision sur 2 000 images de test
               </span>
             </h1>

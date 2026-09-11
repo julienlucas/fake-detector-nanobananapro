@@ -6,7 +6,7 @@ Application web permettant de détecter si une image a été générée par une 
 *   **Précision globale :** 90% (score F1 90%, testé sur 2000 images de validation)
 *   **Précision selfies smartphone :** 80%
 
-![Fakefinder](./static/header-b.png)
+![Fakefinder](./static/header-a.png)
 
 ## 📁 Dataset d'entraînement
 12000 images (6000 réelles / 3000 Midjourney,SD,Dall-e / 3000 Nano Banana Pro)
