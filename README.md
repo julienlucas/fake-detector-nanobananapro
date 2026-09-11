@@ -1,4 +1,4 @@
-# Fakefinder images IA vs Real NanoBananaPro et autres
+# Différenciateur réels vs images IA NanoBananaPro et modèles de diffusion
 
 Application web permettant de détecter si une image a été générée par une Intelligence Artificielle (Midjourney, DALL-E, Stable Diffusion et NanoBananaPro) ou si elle est réelle.
 
@@ -6,7 +6,7 @@ Application web permettant de détecter si une image a été générée par une 
 *   **Précision globale :** 90% (score F1 90%, testé sur 2000 images de validation)
 *   **Précision selfies smartphone :** 80%
 
-![Fakefinder](./static/header.png)
+![Fakefinder](./static/header-b.png)
 
 ## 📁 Dataset d'entraînement
 12000 images (6000 réelles / 3000 Midjourney,SD,Dall-e / 3000 Nano Banana Pro)
