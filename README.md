@@ -1,4 +1,4 @@
-# Différenciateur réels vs images IA NanoBananaPro et modèles de diffusion
+# Différenciateur images réelles vs IA NanoBananaPro et modèles de diffusion
 
 Application web permettant de détecter si une image a été générée par une Intelligence Artificielle (Midjourney, DALL-E, Stable Diffusion et NanoBananaPro) ou si elle est réelle.
 
